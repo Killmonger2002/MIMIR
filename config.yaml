@@ -1,0 +1,35 @@
+audio:
+  input_device_name: CMF Buds Pro 2
+hotkeys:
+  pause_resume: ctrl+shift+m
+  quit: ctrl+shift+q
+lifecycle:
+  check_interval_seconds: 30
+  idle_unload_minutes: 5
+llm:
+  model: phi3:mini
+  num_predict: 5
+  temperature: 0
+logging:
+  backup_count: 3
+  level: INFO
+  max_bytes: 5242880
+printer:
+  last_opened_file_placeholder: ''
+stt:
+  compute_type: int8
+  device: cpu
+  model_size: tiny.en
+  sample_rate: 16000
+  silence_duration_sec: 1.0
+  silence_threshold: 500
+tts:
+  speed: 1.0
+  voice_config_path: models/piper/en_US-amy-medium.onnx.json
+  voice_model_path: models/piper/en_US-amy-medium.onnx
+volume:
+  volume_step_percent: 12
+wake_word:
+  model_path: ''
+  phrase: hey jarvis
+  sensitivity: 0.4
