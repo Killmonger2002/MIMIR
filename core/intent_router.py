@@ -11,7 +11,14 @@ from __future__ import annotations
 import logging
 import re
 
+from core.text_utils import normalize_command, strip_filler_prefixes
+from executors import system_executor as _system_executor
+
 logger = logging.getLogger("mimir.intent_router")
+
+# Re-exported for backwards compatibility - executors historically imported
+# this name directly from intent_router.
+_strip_filler_prefixes = strip_filler_prefixes
 
 # Ordered list of (executor_name, [regex patterns]).
 # First matching pattern wins, in declaration order.
@@ -19,7 +26,9 @@ _PATTERNS: list[tuple[str, list[str]]] = [
     (
         "app_executor",
         [
-            r"^(open|launch|start|run)\s+(?!.*\b(downloads|desktop|documents|pictures|music|videos|folder)\b).+",
+            r"^(open|launch|start|run)\s+"
+            r"(?!.*\b(downloads|desktop|documents|pictures|music|videos|folder|this pc|my computer)\b)"
+            r"(?!.*\b(disk|drive)\s+[a-z]\b).+",
         ],
     ),
     (
@@ -27,6 +36,12 @@ _PATTERNS: list[tuple[str, list[str]]] = [
         [
             r"^(open|go to|navigate to)\s+.*\b(downloads|desktop|documents|pictures|music|videos|folder)\b",
             r"^(find|search for|locate)\s+(my\s+)?.+",
+            r"\bthis pc\b",
+            r"\bmy computer\b",
+            r"\b(disk|drive)\s+[a-z]\b",
+            r"\b(go back|go up|previous (directory|folder)|parent (directory|folder))\b",
+            r"\b(list|show|tell)\b.*\bfiles?\b",
+            r"\bwhat files\b",
         ],
     ),
     (
@@ -107,29 +122,12 @@ _PATTERNS: list[tuple[str, list[str]]] = [
             r"\bwhat can you do\b",
             r"\b(list|show)\b.*\b(commands?|capabilities)\b",
             r"^help$",
-            r"(quit|exit|close|shut\s*down|stop)\s*(yourself|mimir)",
-            r"\bmimir\b.*\b(quit|exit|shut\s*down)\b",
+            _system_executor._QUIT_RE.pattern,
         ],
     ),
 ]
 
 _LLM_CATEGORIES = [name for name, _ in _PATTERNS] + ["browser_executor", "unknown"]
-
-# Stripped repeatedly from the front of the transcript before classification,
-# so polite phrasing like "Please open notepad" routes the same as "open notepad".
-_FILLER_PREFIX_RE = re.compile(
-    r"^(please|hey( mimir)?|mimir|can you|could you|would you|will you)[\s,]+",
-    re.IGNORECASE,
-)
-
-
-def _strip_filler_prefixes(text: str) -> str:
-    """Repeatedly strip leading filler phrases like 'please'/'can you'."""
-    while True:
-        new_text = _FILLER_PREFIX_RE.sub("", text, count=1)
-        if new_text == text:
-            return text
-        text = new_text
 
 
 def _regex_classify(text: str) -> str | None:
@@ -180,11 +178,7 @@ def classify(text: str) -> str:
     "unknown" if neither the regex tier nor the LLM fallback can
     classify the command.
     """
-    text = text.lower().strip()
-    if not text:
-        return "unknown"
-
-    text = _strip_filler_prefixes(text).strip()
+    text = normalize_command(text)
     if not text:
         return "unknown"
 

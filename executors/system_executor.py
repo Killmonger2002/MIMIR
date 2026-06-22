@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import re
 
+from core.text_utils import normalize_command
 from executors.base import ExecutorResult
 from state import AppState
 
 _QUIT_RE = re.compile(
-    r"(quit|exit|close|shut\s*down|stop)\s*(yourself|mimir)|"
-    r"(mimir\s*,?\s*(quit|exit|shut\s*down))",
+    r"(quit|exit|close|shut\s*down|stop|power\s*off)\s*(yourself|mimir)|"
+    r"(mimir\s*,?\s*(quit|exit|shut\s*down))|"
+    r"^(shut\s*down|power\s*off)\W*$|"
+    r"\bturn\s+(yourself|mimir)\s+off\b|"
+    r"\bshut\s+(yourself|mimir)\s+down\b|"
+    r"^good\s*bye\b",
     re.IGNORECASE,
 )
 
@@ -28,7 +33,7 @@ _CAPABILITIES = (
 
 def execute(command_text: str, state: AppState) -> ExecutorResult:
     """Handle help/capability queries and self-shutdown requests."""
-    text = command_text.lower().strip()
+    text = normalize_command(command_text)
 
     if _QUIT_RE.search(text):
         return ExecutorResult(success=True, speak="Goodbye.", shutdown=True)

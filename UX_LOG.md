@@ -238,6 +238,263 @@ Each entry: description, status, fix/notes.
   PowerPoint", "open settings", "open calendar", "open paint", and "Open
   paint. Open paint." all now succeed.
 
+## 13. Couldn't self-shutdown by voice, couldn't toggle Wi-Fi, couldn't switch windows; requested live transcript + folder context memory
+- **Observed**:
+  - "Shut down" / "Shut yourself down" / "Turn yourself off" -> "I didn't
+    understand that command." (only "close/quit/exit yourself/mimir"
+    phrasing was recognized).
+  - "Turn off wifi" -> "I couldn't change the Wi-Fi state" with no
+    explanation.
+  - "Switch to [app]" reliably crashed window_executor with a raised
+    exception, caught and reported as "I couldn't do that with the window."
+  - Request: make the transcript window auto-update instead of needing a
+    manual Refresh click.
+  - Request: remember the last folder opened in conversation, so "open
+    documents" then "open dell folder" opens Dell inside Documents instead
+    of searching from scratch / failing.
+- **Status**: Fixed (shutdown, transcript, folder memory); Wi-Fi and window
+  switching root causes diagnosed below - one is a hard OS limitation.
+- **Root cause / Fix**:
+  - **Shutdown**: `system_executor._QUIT_RE` (shared by `intent_router` for
+    routing) only matched "<verb> yourself/mimir" with the verb immediately
+    adjacent. Broadened to also match bare "shut down"/"power off", "turn
+    yourself/mimir off", and "shut yourself/mimir down" (verb...object split
+    by the name). `intent_router.py` now imports and reuses
+    `system_executor._QUIT_RE.pattern` directly instead of a separately
+    hand-maintained copy, so the two can't drift out of sync again.
+  - **Wi-Fi toggle**: confirmed via direct test that `netsh interface set
+    interface Wi-Fi admin=disabled` returns "The requested operation
+    requires elevation (Run as administrator)" - MIMIR isn't running
+    elevated. This is a real OS permission requirement, not a bug in our
+    code. `wifi_executor._set_radio` now detects "elevation" in the netsh
+    output and speaks a clear message ("I need administrator permissions to
+    change Wi-Fi...") instead of a generic failure. **Still open**: turning
+    Wi-Fi on/off by voice requires running MIMIR as Administrator, or a
+    future rewrite using the WinRT Radio API which doesn't need elevation.
+  - **Window switching**: reproduced a real `pywintypes.error: (126, '
+    SetForegroundWindow', 'The specified module could not be found.')` when
+    calling `win32gui.SetForegroundWindow` on this machine (likely a pywin32
+    DLL-loading quirk). Replaced with `_force_foreground()`, which restores
+    minimized windows and uses `ctypes.windll.user32.SetForegroundWindow`
+    with `AttachThreadInput` around the call (the standard workaround for
+    Windows' foreground-switch lock) - confirmed working via direct test.
+    Also added `_best_window_match()` (substring match before fuzzy) so
+    short queries like "switch to code" don't lose to an unrelated window
+    title under the default fuzzy scorer, the same class of bug fixed for
+    app launching in entry #11.
+  - **Live transcript**: `ui/transcript_window.py` now schedules a
+    `window.after(750, ...)` self-rescheduling poll that repopulates the
+    text widget whenever the conversation log grows, and auto-scrolls to
+    the bottom (`text_widget.see(tk.END)`) - no more manual Refresh button.
+  - **Folder context memory**: added `AppState.set_last_folder` /
+    `get_last_folder`. `file_executor._open_folder` now records the path
+    every time it opens a folder, and - when a command has no recognized
+    top-level folder keyword (e.g. "open dell folder") - searches inside the
+    last-opened folder first before falling back to the full
+    Desktop/Downloads/Documents/Pictures/Music/Videos search.
+- **Verified**: "shut down", "shut yourself down", "turn yourself off",
+  "power off" all now trigger `shutdown=True`; "switch to code"/"switch to
+  visual studio code"/"switch to settings" all succeed without raising;
+  "open documents" then "open dell folder" resolved to
+  `Documents\Dell...` via direct execution test.
+
+## 14. "Open X in File Explorer" opened a random unrelated subfolder; no way to list a folder's contents by voice
+- **Observed**:
+  - "Open Documents in File Explorer" / "Open the folder documents in File
+    Explorer." -> opened an unrelated, deeply-nested subfolder instead of
+    Documents itself.
+  - "In the folder documents, list all the files." / "Let's tell the files
+    in the folder document." -> "I didn't understand that command." (no
+    "list files" capability existed at all).
+- **Status**: Fixed
+- **Root cause**: `_open_folder`'s `_STOPWORDS` set didn't include
+  "file"/"explorer", so "in file explorer" survived into the subfolder
+  search words. The lone leftover word "file" then substring-matched a
+  real, unrelated folder 3 levels deep in Documents (whose name happened to
+  contain "file...") because `_find_subfolder`'s substring check
+  (`name_lower in d_lower`) has no word boundary - any short word can
+  falsely match inside a longer folder name.
+- **Fix**:
+  - `file_executor.py`: added a `_TRAILING_EXPLORER_RE` that strips a
+    trailing "in/on (the) (windows) file explorer" phrase before extracting
+    search words, and added "file"/"files"/"explorer"/"windows" to
+    `_STOPWORDS` as a backstop.
+  - Added a new "list files" capability: `_LIST_FILES_RE` (`list/show/tell
+    ... files` or "what files") triggers `_list_files()`, which resolves
+    the target folder (explicit folder name, else the last-opened folder
+    via `state.get_last_folder()`), lists its contents with
+    `os.listdir`, and speaks up to 10 entries plus a "+N more" count.
+    Wired into `core/intent_router.py`'s `file_executor` patterns.
+- **Verified**: "Open Documents in File Explorer", "Open the folder
+  documents in File Explorer.", "In the folder documents, list all the
+  files.", "Let's tell the files in the folder document.", and "list files
+  in documents" all now produce the correct result.
+- **Scope note**: this covers opening folders/subfolders and listing
+  contents - the user asked for "all File Explorer operations". Renaming,
+  moving, copying, and deleting files/folders by voice are not implemented
+  yet; those are destructive/higher-risk and would need an explicit
+  confirmation step before being added.
+
+## 15. Voice "shut down" crashed with a generic error instead of shutting down; every folder open spawned a new File Explorer window
+- **Observed**:
+  - Saying "shut down"/"goodbye" etc. produced "Sorry, something went
+    wrong with that." instead of actually shutting MIMIR down.
+  - Every "open X" folder command opened a brand-new File Explorer window,
+    even if one was already open.
+- **Status**: Fixed
+- **Root cause**:
+  - `Mimir.shutdown()` (in `main.py`) called
+    `self.wake_word_listener.stop()`, which does `self._thread.join()`.
+    Voice-triggered shutdown runs inside the wake-word listener's own
+    `on_detected` callback - i.e. on that listener's own thread - so
+    `thread.join()` was joining the current thread, which Python raises as
+    `RuntimeError: cannot join current thread`. That exception propagated
+    up and was caught by `main.py`'s generic per-command exception handler,
+    which spoke the fallback "Sorry, something went wrong" message instead
+    of ever reaching the real shutdown sequence.
+  - `file_executor._open_path` always called `os.startfile(path)`, which
+    unconditionally launches a new `explorer.exe` window - there was no
+    reuse of an already-open window.
+- **Fix**:
+  - `main.py`: `shutdown()` now only announces and then hands the actual
+    stop/join/exit sequence to a brand-new dedicated thread
+    (`_shutdown_worker`), so the join calls are never made from the thread
+    being joined, regardless of whether shutdown was triggered by voice,
+    hotkey, or the tray menu. The worker finishes with `os._exit(0)` for a
+    guaranteed full-process exit (tray/hotkey/lifecycle threads are all
+    daemon threads, but `os._exit` makes this unconditional).
+  - `executors/file_executor.py`: added `_navigate_existing_explorer()`,
+    which uses `win32com.client.Dispatch("Shell.Application")` to find an
+    already-open Explorer window and call `.Navigate2(path)` on it; falls
+    back to `os.startfile(path)` (new window) only if none is open.
+- **Verified**: direct test confirmed opening Documents then Downloads
+  reuses the same Explorer window (`Shell.Application` window count stayed
+  at 1); shutdown logic reviewed to confirm the worker thread is distinct
+  from the wake-word/hotkey/tray callback threads in every call path.
+
+## 16. "Open Dell" after "Open Documents" launched a Dell utility exe instead of the Dell subfolder
+- **Observed**: "Open documents." then "Open Dell." -> "Opening dell", but
+  no Dell folder actually opened.
+- **Status**: Fixed
+- **Root cause**: "Open Dell" doesn't mention a known folder keyword
+  (downloads/desktop/documents/etc.), so `intent_router` routed it to
+  `app_executor`, not `file_executor` - meaning the folder-context memory
+  added in entry #13 (last-opened-folder lookup) never ran. `app_executor`
+  then did a legitimate fuzzy search and found real, installed Dell
+  utilities (`Dell.TechHub.exe`, `DellSupportAssistControlPanel.exe`, etc.
+  - this machine has over a dozen Dell-branded background services), which
+  share a first letter with "dell" and passed the existing false-positive
+  guard, so it "successfully" launched one of those instead.
+- **Fix**: `app_executor.execute()` now checks, before searching the app
+  index, whether `app_name` is a known alias (`_ALIASES`); if not, it first
+  tries `file_executor._find_subfolder()` against
+  `state.get_last_folder()` (the folder the user last navigated into). If a
+  matching subfolder is found there, it's opened instead of falling
+  through to the app search. Known aliases ("notepad", "calculator",
+  "chrome", etc.) skip this check entirely, so core app-launching behavior
+  is unaffected.
+- **Verified**: "Open documents." then "Open Dell." now opens
+  `Documents\Dell` (confirmed via direct execution test) instead of an
+  unrelated Dell background utility.
+
+## 17. Couldn't open "This PC" or a drive letter, no way to go up a directory, had to repeat "close file explorer" for each window
+- **Observed**:
+  - "Open this PC." / "Open disk D." -> routed to `app_executor`, which
+    found no real match and either failed outright or falsely reported
+    success without opening anything useful.
+  - "Go back in the directory." -> "I didn't understand that command." (no
+    parent-directory/back navigation existed at all).
+  - With several File Explorer windows open, "Close File Explorer" only
+    closed one - had to repeat the command once per window, since every
+    Explorer window shares the literal title "File Explorer" and
+    `_best_window_match` just picks one arbitrarily.
+- **Status**: Fixed
+- **Fix**:
+  - `file_executor.py`: added `_SPECIAL_FOLDERS` ("this pc"/"my computer"
+    -> `shell:MyComputerFolder`), `_DRIVE_RE` ("disk/drive X" -> `X:\`,
+    verified to exist via `os.path.isdir` before opening), and
+    `_GO_BACK_RE` ("go back"/"go up"/"previous directory"/"parent folder")
+    which resolves `os.path.dirname()` of `state.get_last_folder()`. All
+    three go through the existing `_open_path` (so they get File Explorer
+    window reuse and update the folder-context memory too).
+  - `core/intent_router.py`: routed these phrases to `file_executor`, and
+    narrowed `app_executor`'s catch-all "open ..." pattern with extra
+    negative lookaheads for `this pc`/`my computer`/`disk|drive <letter>`
+    so it stops intercepting them before file_executor's patterns get a
+    chance (legit app names like "disk cleanup" are unaffected since the
+    lookahead only excludes "disk/drive" followed by a single letter).
+  - `executors/window_executor.py`: `_close_target` now closes **every**
+    matching window (not just the closest-scoring one) whenever the
+    resolved target is File Explorer specifically, or when the user says
+    "close all <target>" explicitly - other single-window apps keep the
+    previous closest-match behavior.
+- **Verified**: "Open this PC.", "Open disk D.", and "Open documents." then
+  "Go back in the directory." (-> parent folder) all resolved correctly via
+  direct execution tests; opening 3 separate Explorer windows then "Close
+  File Explorer" closed all of them in one call (confirmed via
+  `Shell.Application` window count dropping from 4 to 0).
+
+## 18. STT-inserted commas after verbs broke commands entirely; no way to open a nested folder under an arbitrary (non-root) parent name
+- **Observed**:
+  - "Open, Dell." / "Open, then." -> "I didn't understand that command."
+    even though "Open Dell." (no comma) worked fine.
+  - "Open the soft folder in the folder cortex." -> opened Codex (the
+    closest fuzzy match to "cortex" found by treating "soft"/"cortex" as
+    flat, unordered search words) instead of recognizing "cortex" as the
+    parent folder and "soft" as the subfolder to look for inside it.
+  - (Noted, not a bug: "Go back to that creek." still correctly went up a
+    directory despite the garbled tail - the transcript log faithfully
+    shows what STT actually heard, which is expected/useful for debugging.)
+- **Status**: Fixed
+- **Root cause**: every verb-prefix regex across the codebase
+  (`^(?:open|launch|start|run)\s+...`, `^(?:close|quit|exit)\s+...`, the
+  `_QUIT_RE` shutdown patterns, etc.) requires literal whitespace
+  immediately after the verb. When STT inserts a comma ("Open, Dell."),
+  none of these regexes match, so commands silently fell through to
+  "unknown" - and each executor was independently doing its own ad hoc
+  `_strip_filler_prefixes(...).strip(...)` call that never handled internal
+  punctuation either.
+- **Fix**:
+  - Added `core/text_utils.py` - a shared, leaf module (no dependency on
+    `intent_router` or any executor, avoiding import cycles) exporting
+    `normalize_command()`, which lowercases, strips filler prefixes, and
+    collapses internal commas to spaces before trimming leading/trailing
+    punctuation. `core/intent_router.py`, `system_executor.py`,
+    `app_executor.py`, `window_executor.py`, and `file_executor.py` were
+    all switched from their previous one-off stripping logic to this one
+    shared function, so a comma-after-verb fix applies everywhere at once.
+  - `file_executor.py`: added `_NESTED_RE` ("X folder in/inside (the)
+    (folder) Y") plus `_resolve_named_folder()`/`_open_nested_folder()`,
+    which resolves an arbitrary parent folder name Y anywhere under the
+    known roots first, then looks for X as a subfolder of Y specifically -
+    instead of treating every word as an unordered, flat search term.
+- **Verified**: "Open, Dell.", "Open, then." (now a clear "couldn't find an
+  app called then" instead of "unknown"), "Shut down, Mimir." (now
+  shuts down), and "Open the soft folder in the folder cortex." (now
+  resolves "cortex" to Codex first, then looks for "soft" inside it) all
+  produce correct results via direct execution tests.
+
+## 19. Window close/switch confirmations echoed the raw (mis-heard) phrase instead of what was actually resolved
+- **Observed**: "close all windows of pile explorer." correctly closed the
+  File Explorer windows, but MIMIR replied "Closing all windows of pile
+  explorer" - parroting back the STT mis-hearing ("pile" for "file")
+  instead of confirming what it actually understood and closed.
+- **Status**: Fixed
+- **Root cause**: `_close_target`'s and `_switch_to`'s success messages were
+  built from the raw spoken `target` string, not the window title that was
+  actually resolved and acted on. The matching logic was correct throughout
+  - only the spoken confirmation was wrong.
+- **Fix**: `executors/window_executor.py` now builds the spoken confirmation
+  from the resolved match: `_switch_to` and the single-window branch of
+  `_close_target` use `best_title` (the actual window title); the
+  close-all branch uses the distinct matched title name when every closed
+  window shares the same title (the common case, e.g. several "X - File
+  Explorer" windows), falling back to the spoken target only if multiple
+  different window names were closed at once.
+- **Verified**: direct test of "close all windows of pile explorer." now
+  replies "Closing Downloads - File Explorer" (the real, resolved window
+  title) instead of echoing "pile explorer".
+
 ## 3. No system notifications for MIMIR lifecycle / error states
 - **Observed**: No Windows notification when MIMIR starts/stops, or when it
   hits a state that silently fails (e.g. system volume at 0 so TTS can't be

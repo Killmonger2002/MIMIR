@@ -5,3 +5,8 @@ models/
 *.log
 logs/
 .env
+.env.*
+*.secrets.yaml
+config.local.yaml
+.vscode/
+.idea/

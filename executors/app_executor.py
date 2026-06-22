@@ -15,7 +15,7 @@ import subprocess
 
 from thefuzz import process
 
-from core.intent_router import _strip_filler_prefixes
+from core.text_utils import normalize_command
 from executors.base import ExecutorResult
 from state import AppState
 
@@ -125,7 +125,7 @@ def _get_index() -> dict[str, str]:
 
 def _extract_app_name(command_text: str) -> str:
     """Strip leading verbs like 'open'/'launch'/'start' and trailing punctuation."""
-    text = _strip_filler_prefixes(command_text.strip().lower())
+    text = normalize_command(command_text)
     match = _TRIGGER_RE.match(text)
     if match:
         text = match.group(1).strip()
@@ -149,6 +149,19 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
         if protocol:
             os.startfile(protocol)
             return ExecutorResult(success=True, speak=f"Opening {app_name}")
+
+        # If this isn't a known app alias, prefer a matching subfolder in the
+        # last folder the user navigated into (e.g. "open documents" then
+        # "open dell" should open Documents\Dell, not some unrelated
+        # Dell-branded background utility that happens to fuzzy-match).
+        if app_name.lower() not in _ALIASES:
+            last_folder = state.get_last_folder()
+            if last_folder:
+                from executors.file_executor import _find_subfolder, _open_path
+
+                subfolder = _find_subfolder(app_name, [last_folder])
+                if subfolder is not None:
+                    return _open_path(subfolder, state)
 
         index = _get_index()
         if not index:

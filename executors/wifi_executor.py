@@ -55,6 +55,11 @@ def _set_radio(enable: bool) -> ExecutorResult:
     )
     if result.returncode == 0:
         return ExecutorResult(success=True, speak=f"Wi-Fi turned {'on' if enable else 'off'}")
+    if "elevation" in (result.stdout + result.stderr).lower():
+        return ExecutorResult(
+            success=False,
+            speak="I need administrator permissions to change Wi-Fi. Please restart MIMIR as administrator.",
+        )
     return ExecutorResult(success=False, speak="I couldn't change the Wi-Fi state")
 
 

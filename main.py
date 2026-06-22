@@ -11,6 +11,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 import time
 
 import win32api
@@ -145,6 +146,13 @@ class Mimir:
         self.state.set_mode("shutting_down")
         tts.speak("MIMIR shutting down", self.state)
 
+        # Run the actual stop/join sequence on a dedicated thread. shutdown()
+        # can be invoked from the wake-word listener's own thread (voice
+        # "shut down" command), and WakeWordListener.stop()/thread.join()
+        # raises "cannot join current thread" if called from that thread.
+        threading.Thread(target=self._shutdown_worker, name="shutdown-worker", daemon=True).start()
+
+    def _shutdown_worker(self) -> None:
         self.wake_word_listener.stop()
         self.hotkeys.stop()
         self.lifecycle.shutdown()
@@ -153,7 +161,7 @@ class Mimir:
             self.tray.stop()
 
         time.sleep(0.5)
-        sys.exit(0)
+        os._exit(0)
 
     def run(self) -> None:
         """Start all subsystems and run the tray icon on the main thread."""
@@ -179,6 +187,8 @@ class Mimir:
 if __name__ == "__main__":
     _lock = _acquire_single_instance_lock()
     if _lock is None:
-        print("MIMIR is already running.")
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, "MIMIR is already running.", "MIMIR", 0x40)
         sys.exit(1)
     Mimir().run()

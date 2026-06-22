@@ -23,6 +23,7 @@ class AppState:
         self._mode: str = "idle"
         self._is_paused: bool = False
         self._conversation_log: list[dict[str, Any]] = []
+        self._last_folder: str | None = None
 
     def set_mode(self, mode: str) -> None:
         """Set the current operating mode."""
@@ -66,3 +67,13 @@ class AppState:
             if limit <= 0:
                 return list(self._conversation_log)
             return list(self._conversation_log[-limit:])
+
+    def set_last_folder(self, path: str) -> None:
+        """Remember the most recently opened folder, for context-aware navigation."""
+        with self._lock:
+            self._last_folder = path
+
+    def get_last_folder(self) -> str | None:
+        """Return the most recently opened folder path, if any."""
+        with self._lock:
+            return self._last_folder

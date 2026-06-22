@@ -8,8 +8,11 @@ REM     file in your Startup folder (Win+R, type "shell:startup", Enter).
 REM   - You can also pin a shortcut to this file to the taskbar/Start menu
 REM     for quick manual launches.
 
-if exist venv\Scripts\activate.bat (
-    call venv\Scripts\activate.bat
+cd /d "%~dp0"
+
+set "PYTHONW=pythonw.exe"
+if exist venv\Scripts\pythonw.exe (
+    set "PYTHONW=venv\Scripts\pythonw.exe"
 )
 
-python main.py
+start "" /D "%~dp0" "%PYTHONW%" "%~dp0main.py"

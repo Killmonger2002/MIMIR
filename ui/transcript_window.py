@@ -10,6 +10,10 @@ from ui.ui_root import get_root, run_on_ui_thread, show_window
 
 _window: tk.Toplevel | None = None
 _text_widget: scrolledtext.ScrolledText | None = None
+_last_count = 0
+_refresh_running = False
+
+_REFRESH_INTERVAL_MS = 750
 
 
 def open_transcript_window(state: AppState) -> None:
@@ -18,7 +22,7 @@ def open_transcript_window(state: AppState) -> None:
 
 
 def _open(state: AppState) -> None:
-    global _window, _text_widget
+    global _window, _text_widget, _refresh_running
 
     if _window is not None and _window.winfo_exists():
         _populate(state)
@@ -33,24 +37,40 @@ def _open(state: AppState) -> None:
     text_widget = scrolledtext.ScrolledText(window, wrap=tk.WORD, state="disabled")
     text_widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-    button_frame = tk.Frame(window)
-    button_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
-
-    refresh_button = tk.Button(button_frame, text="Refresh", command=lambda: _populate(state))
-    refresh_button.pack(side=tk.RIGHT)
-
     _window = window
     _text_widget = text_widget
 
     _populate(state)
     show_window(window)
 
+    if not _refresh_running:
+        _refresh_running = True
+        window.after(_REFRESH_INTERVAL_MS, lambda: _schedule_refresh(state))
+
+
+def _schedule_refresh(state: AppState) -> None:
+    global _refresh_running
+
+    if _window is None or not _window.winfo_exists():
+        _refresh_running = False
+        return
+
+    current_count = len(state.get_log(limit=0))
+    if current_count != _last_count:
+        _populate(state)
+
+    _window.after(_REFRESH_INTERVAL_MS, lambda: _schedule_refresh(state))
+
 
 def _populate(state: AppState) -> None:
+    global _last_count
+
     if _text_widget is None:
         return
 
     entries = state.get_log(limit=50)
+    _last_count = len(state.get_log(limit=0))
+
     _text_widget.configure(state="normal")
     _text_widget.delete("1.0", tk.END)
     for entry in entries:
@@ -61,6 +81,7 @@ def _populate(state: AppState) -> None:
             f"  MIMIR: {entry['response']}\n\n",
         )
     _text_widget.configure(state="disabled")
+    _text_widget.see(tk.END)
 
 
 if __name__ == "__main__":
