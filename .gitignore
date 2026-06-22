@@ -10,3 +10,7 @@ logs/
 config.local.yaml
 .vscode/
 .idea/
+
+# Machine-specific runtime config (audio device name, etc.) - copy
+# config.example.yaml to config.yaml and edit it locally instead.
+config.yaml

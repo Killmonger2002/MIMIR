@@ -1,5 +1,8 @@
 audio:
-  input_device_name: CMF Buds Pro 2
+  # Substring match (case-insensitive) against your input device's name,
+  # e.g. "CMF Buds Pro 2" or "Realtek". Leave empty to use the system
+  # default microphone. Run test_devices.py to list available devices.
+  input_device_name: ""
 hotkeys:
   pause_resume: ctrl+shift+m
   quit: ctrl+shift+q
