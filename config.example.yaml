@@ -3,6 +3,27 @@ audio:
   # e.g. "CMF Buds Pro 2" or "Realtek". Leave empty to use the system
   # default microphone. Run test_devices.py to list available devices.
   input_device_name: ""
+  # Play a short chime instead of speaking the word "Listening" before
+  # every command - the spoken version adds a real, perceptible ~500ms-1s
+  # delay before you can even start talking. Set false for no cue at all
+  # (rely on the tray icon turning green instead).
+  listening_cue_enabled: true
+confirmation:
+  # Ask a spoken yes/no question before uncertain matches (fuzzy folder/
+  # window/app guesses) and destructive actions (shutdown, sleep,
+  # closing multiple windows). Set false to always act immediately.
+  enabled: true
+  # Confirm the transcript itself when Whisper's confidence is below this
+  # (clean speech scores around -0.2 to -0.4; garbled speech below -0.8).
+  stt_logprob_threshold: -0.8
+  # Seconds to wait for the yes/no answer before treating it as "no".
+  reply_wait_sec: 6.0
+followup:
+  # After answering a command, briefly keep listening without requiring
+  # the wake word again, so a quick next command doesn't need "hey mimir"
+  # repeated. Set false to always require the wake word for every command.
+  enabled: true
+  window_sec: 4.0
 hotkeys:
   pause_resume: ctrl+shift+m
   quit: ctrl+shift+q
@@ -13,26 +34,87 @@ llm:
   model: phi3:mini
   num_predict: 5
   temperature: 0
+  # How long to wait for Ollama before giving up and falling back to
+  # "unknown" - only affects commands the regex tier can't classify.
+  # Lower = faster failure when Ollama is slow/unreachable, at the risk of
+  # giving up on a legitimately-slow-but-correct response.
+  timeout_sec: 1.5
+media:
+  # How many Right-Arrow seek-forward presses "skip ad" sends to the
+  # foreground window (works on YouTube/Netflix/Vimeo-style players where
+  # arrow keys seek). Each press's actual seek distance depends on the
+  # player, so this is a rough "how far forward" knob, not exact seconds.
+  ad_skip_seek_presses: 6
 logging:
   backup_count: 3
   level: INFO
   max_bytes: 5242880
 printer:
   last_opened_file_placeholder: ''
+speaker_verification:
+  # Filters recorded audio down to segments matching the enrolled voice
+  # (run enroll_voice.py once) - keeps MIMIR "locked on" to whoever said
+  # the wake word instead of picking up other people talking nearby.
+  # Safe to leave on: it's a no-op until you've actually enrolled.
+  enabled: true
+  # Cosine similarity (0-1) a segment must reach against your enrolled
+  # voice to be kept. Lower = more tolerant of mic/background variation
+  # but lets more of other people's speech through; higher = stricter but
+  # may reject your own voice more often (sick, shouting, different mic).
+  similarity_threshold: 0.75
+  # Partial-utterance windows per second - resemblyzer's own default
+  # granularity, shouldn't normally need changing.
+  rate: 1.3
 stt:
   compute_type: int8
   device: cpu
   model_size: tiny.en
   sample_rate: 16000
-  silence_duration_sec: 1.0
+  # How long a trailing silence has to last before a recording is
+  # considered finished. Lower = snappier responses; too low risks cutting
+  # you off mid-sentence during a natural pause - raise this back toward
+  # 1.0 if that starts happening.
+  silence_duration_sec: 0.6
   silence_threshold: 500
+  # Bias transcription toward real folder/app names on this machine (see
+  # core/vocabulary.py) - helps with names like "Codex" or "Dell" that a
+  # generic language model might otherwise mishear as a common homophone.
+  vocabulary_hint_enabled: true
+  # Silero VAD's speech-probability threshold (0-1) for detecting
+  # end-of-utterance. Lower = more sensitive to quiet speech, but more
+  # prone to false positives from background noise.
+  vad_speech_threshold: 0.5
+  # Spectral-gating noise reduction on the recorded clip before
+  # transcription. Can add tens to a few hundred ms on CPU.
+  denoise_enabled: true
 tts:
   speed: 1.0
   voice_config_path: models/piper/en_US-amy-medium.onnx.json
   voice_model_path: models/piper/en_US-amy-medium.onnx
+  # Piper/VITS prosody knobs, left at the voice's own baked-in defaults
+  # (null) unless overridden. noise_scale adds variation to the voice
+  # itself (higher = more expressive, too high = unstable/garbled);
+  # noise_w_scale adds variation to timing/pacing (higher = less monotone
+  # rhythm). Try nudging these up slightly (e.g. 0.75/0.9) if the voice
+  # sounds flat - this voice's own baked-in defaults are 0.667/0.8.
+  noise_scale: null
+  noise_w_scale: null
+  # Let you interrupt MIMIR mid-sentence by talking, instead of having to
+  # wait for it to finish. Requires several consecutive VAD-positive
+  # chunks (not one frame) before triggering, both to avoid noise false
+  # positives and because MIMIR's own voice can leak into the mic without
+  # a headset. Set false to disable if it triggers on its own voice.
+  barge_in_enabled: true
+  barge_in_vad_threshold: 0.6
+  barge_in_consecutive_chunks: 3
 volume:
   volume_step_percent: 12
 wake_word:
   model_path: ''
   phrase: hey jarvis
   sensitivity: 0.4
+  # Require this many consecutive chunks above sensitivity before firing,
+  # instead of a single frame - cuts down on brief false positives from
+  # noise/other speech spiking a model's score momentarily. Higher = fewer
+  # false positives but slower to trigger on a real "hey mimir".
+  min_activation_chunks: 3

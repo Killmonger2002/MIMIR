@@ -47,11 +47,13 @@ class TrayIcon:
         state: AppState,
         on_open_transcript: Callable[[], None],
         on_open_settings: Callable[[], None],
+        on_listen_now: Callable[[], None],
         on_quit: Callable[[], None],
     ) -> None:
         self._state = state
         self._on_open_transcript = on_open_transcript
         self._on_open_settings = on_open_settings
+        self._on_listen_now = on_listen_now
         self._on_quit = on_quit
         self._icon = pystray.Icon(
             "MIMIR",
@@ -67,6 +69,10 @@ class TrayIcon:
             pystray.MenuItem(
                 "Open Transcript", lambda: self._on_open_transcript(), default=True
             ),
+            # Manual fallback for when the wake word doesn't fire - starts
+            # the same listen/transcribe/route/execute cycle a spoken
+            # "hey mimir" would, without needing the wake word at all.
+            pystray.MenuItem("Listen Now", lambda: self._on_listen_now()),
             pystray.MenuItem("Settings", lambda: self._on_open_settings()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(self._pause_label, self._toggle_pause),
@@ -111,6 +117,7 @@ if __name__ == "__main__":
         _state,
         on_open_transcript=lambda: print("open transcript"),
         on_open_settings=lambda: print("open settings"),
+        on_listen_now=lambda: print("listen now"),
         on_quit=lambda: tray.stop(),
     )
     tray.run()

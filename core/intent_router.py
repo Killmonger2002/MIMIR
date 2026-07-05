@@ -1,9 +1,14 @@
 """Routes transcribed text to the appropriate executor module name.
 
 Two-tier classification:
-    1. Regex tier - fast, deterministic pattern matching.
+    1. Regex tier - confidence-scored pattern matching (see
+       _regex_classify_scored). Each matching executor gets a score
+       combining anchor strength, span coverage, and pattern specificity;
+       the highest-scoring executor wins, rather than whichever pattern
+       happens to be declared first in _PATTERNS.
     2. LLM fallback tier - asks the local Ollama phi3:mini model to
-       classify the command when no regex matches.
+       classify the command when the regex tier's best score is too low
+       to trust (below _LLM_FALLBACK_FLOOR).
 """
 
 from __future__ import annotations
@@ -129,14 +134,171 @@ _PATTERNS: list[tuple[str, list[str]]] = [
 
 _LLM_CATEGORIES = [name for name, _ in _PATTERNS] + ["browser_executor", "unknown"]
 
+# Below this score, the regex tier's best guess isn't trusted enough to
+# act on - fall back to the LLM tier instead. Tuned down from an initial
+# 0.3 after regression testing: 0.3 caused legitimate short keyword
+# matches buried in a longer sentence ("turn off wifi" scored 0.29, "i
+# want to print this pdf" scored 0.26) to be wrongly penalized by their
+# low span-coverage and incorrectly fall back to "unknown".
+_LLM_FALLBACK_FLOOR = 0.25
 
-def _regex_classify(text: str) -> str | None:
-    """Return the first executor whose pattern matches, or None."""
+# When the runner-up executor's score is within this margin of the
+# winner's, the match is ambiguous - logged for visibility (and available
+# to a future "did you mean X or Y" recovery flow), without changing
+# which executor is actually dispatched.
+_AMBIGUITY_MARGIN = 0.1
+
+_ANCHOR_WEIGHT = 0.4
+_COVERAGE_WEIGHT = 0.3
+_SPECIFICITY_WEIGHT = 0.3
+
+# Matches regex syntax characters/escapes, so they can be stripped out
+# when counting a pattern's "literal" (non-syntax) character count for
+# the specificity score below.
+_REGEX_SYNTAX_RE = re.compile(r"\\[bsSdDwW]|[\^$.*+?{}()\[\]|]")
+
+
+def _strip_lookarounds(pattern: str) -> str:
+    """Remove (?!...)/(?=...)/(?<!...)/(?<=...) groups from a pattern,
+    including nested parens - via balanced-paren scanning, since a naive
+    regex substitution would mis-handle nested groups inside a lookaround
+    (and app_executor's own pattern has exactly such a nested group)."""
+    result = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        if pattern[i] == "\\" and i + 1 < n:
+            result.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if pattern[i : i + 3] in ("(?!", "(?="):
+            depth = 1
+            j = i + 3
+            while j < n and depth > 0:
+                if pattern[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                j += 1
+            i = j
+            continue
+        if pattern[i : i + 4] in ("(?<!", "(?<="):
+            depth = 1
+            j = i + 4
+            while j < n and depth > 0:
+                if pattern[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                j += 1
+            i = j
+            continue
+        result.append(pattern[i])
+        i += 1
+    return "".join(result)
+
+
+def _anchor_score(pattern: str) -> float:
+    """Fully anchored (^...$) patterns are the most specific commitment a
+    pattern can make; prefix-anchored (^...) is a weaker but still
+    meaningful commitment; unanchored (\\b...\\b) patterns can match
+    anywhere in the text and so score lowest."""
+    starts_anchored = pattern.startswith("^")
+    ends_anchored = pattern.endswith("$")
+    if starts_anchored and ends_anchored:
+        return 1.0
+    if starts_anchored:
+        return 0.7
+    return 0.4
+
+
+def _specificity_score(pattern: str) -> float:
+    """Penalizes patterns built around a wildcard (`.+`/`.*`, like
+    app_executor's open-ended trigger) relative to patterns built from
+    literal word alternations, since coverage alone rewards a wildcard
+    that matches the whole remaining string by construction.
+
+    Honesty note: for app_executor's specific "open this pc" collision,
+    this factor alone does NOT flip (or even meaningfully narrow) the
+    ordering versus file_executor's short `\\bthis pc\\b` pattern - the
+    catch-all's alternation ("open|launch|start|run") has enough literal
+    characters of its own that the wildcard halving isn't sufficient, and
+    coverage/anchor still dominate. That collision is actually prevented
+    by app_executor's negative lookahead excluding "this pc" outright
+    (see _PATTERNS), which the plan deliberately keeps rather than relying
+    on scoring alone. This factor still matters for the general class of
+    problem - a wildcard match with partial (not full-string) coverage
+    against a comparably-sized literal match - just not this specific
+    100%-coverage case."""
+    core = _strip_lookarounds(pattern)
+    literal_chars = len(_REGEX_SYNTAX_RE.sub("", core))
+    has_wildcard = ".+" in core or ".*" in core
+    score = min(1.0, literal_chars / 40.0)
+    return score * (0.5 if has_wildcard else 1.0)
+
+
+def _pattern_score(pattern: str, match: re.Match, text: str) -> float:
+    coverage = (match.end() - match.start()) / max(1, len(text))
+    return (
+        _ANCHOR_WEIGHT * _anchor_score(pattern)
+        + _COVERAGE_WEIGHT * coverage
+        + _SPECIFICITY_WEIGHT * _specificity_score(pattern)
+    )
+
+
+def _regex_classify_scored(text: str) -> tuple[str | None, float, str | None, float]:
+    """Score every executor whose patterns match `text` and return
+    (best_name, best_score, runner_up_name, runner_up_score). An
+    executor's score is the MAX over its own patterns (not a sum), so an
+    executor with many patterns doesn't win purely by having more of them."""
+    scores: dict[str, float] = {}
     for executor_name, patterns in _PATTERNS:
+        best_for_executor = 0.0
+        matched_any = False
         for pattern in patterns:
-            if re.search(pattern, text):
-                return executor_name
-    return None
+            match = re.search(pattern, text)
+            if match is None:
+                continue
+            matched_any = True
+            best_for_executor = max(best_for_executor, _pattern_score(pattern, match, text))
+        if matched_any:
+            scores[executor_name] = best_for_executor
+
+    if not scores:
+        return None, 0.0, None, 0.0
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    best_name, best_score = ranked[0]
+    if len(ranked) > 1:
+        runner_up_name, runner_up_score = ranked[1]
+    else:
+        runner_up_name, runner_up_score = None, 0.0
+
+    if len(ranked) > 1:
+        logger.info(
+            "Multiple executors matched %r: %s (using %s, score=%.2f)",
+            text,
+            [f"{name}={score:.2f}" for name, score in ranked],
+            best_name,
+            best_score,
+        )
+    if runner_up_name is not None and (best_score - runner_up_score) <= _AMBIGUITY_MARGIN:
+        logger.info(
+            "Ambiguous classification for %r: %s=%.2f vs runner-up %s=%.2f",
+            text,
+            best_name,
+            best_score,
+            runner_up_name,
+            runner_up_score,
+        )
+
+    return best_name, best_score, runner_up_name, runner_up_score
 
 
 def _llm_classify(text: str) -> str:
@@ -152,7 +314,7 @@ def _llm_classify(text: str) -> str:
             f"[{categories_str}]. Reply with ONLY the category name.\n\n"
             f"Command: {text}"
         )
-        client = ollama.Client(timeout=2)
+        client = ollama.Client(timeout=config.llm.timeout_sec)
         response = client.generate(
             model=config.llm.model,
             prompt=prompt,
@@ -182,9 +344,9 @@ def classify(text: str) -> str:
     if not text:
         return "unknown"
 
-    executor_name = _regex_classify(text)
-    if executor_name is not None:
-        logger.debug("Regex classified %r -> %s", text, executor_name)
+    executor_name, score, _runner_up_name, _runner_up_score = _regex_classify_scored(text)
+    if executor_name is not None and score >= _LLM_FALLBACK_FLOOR:
+        logger.debug("Regex classified %r -> %s (score=%.2f)", text, executor_name, score)
         return executor_name
 
     executor_name = _llm_classify(text)
@@ -193,41 +355,70 @@ def classify(text: str) -> str:
 
 
 if __name__ == "__main__":
-    _test_phrases = [
-        "open chrome",
-        "launch spotify",
-        "start notepad",
-        "open downloads folder",
-        "find my resume",
-        "open desktop",
-        "volume 40",
-        "mute",
-        "unmute",
-        "turn it up",
-        "connect to homewifi",
-        "turn off wifi",
-        "disconnect wifi",
-        "connect my headphones",
-        "turn on bluetooth",
-        "pair my speaker",
-        "print this",
-        "i want to print this pdf",
-        "show printers",
-        "minimise this",
-        "switch to chrome",
-        "close this window",
-        "lock the screen",
-        "play",
-        "pause",
-        "next song",
-        "skip",
-        "previous track",
-        "how much battery",
-        "cpu usage",
-        "how much ram",
-        "disk space",
-        "type hello world",
-        "write dear sir",
+    # TESTING.md's 34-phrase manual checklist, each with its expected
+    # executor - this is the regression check for any future _PATTERNS edit.
+    _baseline_phrases: list[tuple[str, str]] = [
+        ("open chrome", "app_executor"),
+        ("launch spotify", "app_executor"),
+        ("start notepad", "app_executor"),
+        ("open downloads folder", "file_executor"),
+        ("find my resume", "file_executor"),
+        ("open desktop", "file_executor"),
+        ("volume 40", "volume_executor"),
+        ("mute", "volume_executor"),
+        ("unmute", "volume_executor"),
+        ("turn it up", "volume_executor"),
+        ("connect to homewifi", "wifi_executor"),
+        ("turn off wifi", "wifi_executor"),
+        ("disconnect wifi", "wifi_executor"),
+        ("connect my headphones", "bluetooth_executor"),
+        ("turn on bluetooth", "bluetooth_executor"),
+        ("pair my speaker", "bluetooth_executor"),
+        ("print this", "printer_executor"),
+        ("i want to print this pdf", "printer_executor"),
+        ("show printers", "printer_executor"),
+        ("minimise this", "window_executor"),
+        ("switch to chrome", "window_executor"),
+        ("close this window", "window_executor"),
+        ("lock the screen", "window_executor"),
+        ("play", "media_executor"),
+        ("pause", "media_executor"),
+        ("next song", "media_executor"),
+        ("skip", "media_executor"),
+        ("previous track", "media_executor"),
+        ("how much battery", "sysinfo_executor"),
+        ("cpu usage", "sysinfo_executor"),
+        ("how much ram", "sysinfo_executor"),
+        ("disk space", "sysinfo_executor"),
+        ("type hello world", "typing_executor"),
+        ("write dear sir", "typing_executor"),
     ]
-    for phrase in _test_phrases:
-        print(f"{phrase!r:40} -> {classify(phrase)}")
+
+    # Real routing bugs from UX_LOG.md, each fixed by a specific _PATTERNS
+    # change - kept here so a future edit can't silently reintroduce one.
+    _regression_phrases: list[tuple[str, str]] = [
+        ("open this pc", "file_executor"),  # entry: app_executor's catch-all must not win via coverage alone
+        ("open codex folder", "file_executor"),  # entry #8
+        ("open codecs subfolder in documents folder", "file_executor"),  # entry #9, STT mishearing "codex"->"codecs"
+        ("close text editor", "window_executor"),  # entry #11
+        ("switch to visual studio code", "window_executor"),  # entry #13
+        ("navigate to downloads folder", "file_executor"),  # entry #11, "navigate to" wasn't routed at all
+        ("shut yourself down", "system_executor"),  # entry #13, shutdown phrasing variant
+        ("go to documents codex folder", "file_executor"),  # entry #8, nested folder phrasing
+        ("quit mimir", "system_executor"),  # window_executor's close/quit/exit pattern must not swallow this
+    ]
+
+    mismatches = 0
+    for phrase, expected in _baseline_phrases + _regression_phrases:
+        name, score, runner_up_name, runner_up_score = _regex_classify_scored(normalize_command(phrase))
+        actual = name if (name is not None and score >= _LLM_FALLBACK_FLOOR) else classify(phrase)
+        status = "OK " if actual == expected else "MISMATCH"
+        ambiguous = " (ambiguous)" if runner_up_name and (score - runner_up_score) <= _AMBIGUITY_MARGIN else ""
+        if actual != expected:
+            mismatches += 1
+        print(
+            f"{status} {phrase!r:48} expected={expected:20} actual={actual:20} "
+            f"score={score:.2f} runner_up={runner_up_name}({runner_up_score:.2f}){ambiguous}"
+        )
+
+    print(f"\n{len(_baseline_phrases) + len(_regression_phrases)} phrases checked, {mismatches} mismatches")

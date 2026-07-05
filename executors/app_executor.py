@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 
 from thefuzz import process
 
@@ -22,6 +23,7 @@ from state import AppState
 logger = logging.getLogger("mimir.app_executor")
 
 _APP_INDEX: dict[str, str] | None = None
+_APP_INDEX_LOCK = threading.Lock()
 
 _SEARCH_DIRS = [
     os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu"),
@@ -77,6 +79,10 @@ _PROTOCOL_ALIASES = {
 }
 
 _MATCH_THRESHOLD = 70
+# Fuzzy scores between _MATCH_THRESHOLD and this launch a best-guess
+# executable - confirm with the user first rather than opening a random
+# similarly-named program.
+_CONFIDENT_SCORE = 85
 
 _TRIGGER_RE = re.compile(r"^(?:open|launch|start|run)\s+(.+)$", re.IGNORECASE)
 
@@ -116,10 +122,23 @@ def _build_index() -> dict[str, str]:
 
 
 def _get_index() -> dict[str, str]:
-    """Return the cached app index, building it on first call."""
+    """Return the cached app index, building it on first call.
+
+    Double-checked locking: main.py prewarms this on a background thread
+    at startup, so a command arriving before that finishes could otherwise
+    race with it here and trigger two redundant directory walks.
+    """
     global _APP_INDEX
     if _APP_INDEX is None:
-        _APP_INDEX = _build_index()
+        with _APP_INDEX_LOCK:
+            if _APP_INDEX is None:
+                _APP_INDEX = _build_index()
+                # The vocabulary hint may have already cached a prompt
+                # without app names (built before this index existed) -
+                # let it pick them up now.
+                from core.vocabulary import reset_cache
+
+                reset_cache()
     return _APP_INDEX
 
 
@@ -138,12 +157,25 @@ def _extract_app_name(command_text: str) -> str:
     return text.strip(" .!?,")
 
 
+_BARE_TRIGGER_VERBS = ("open", "launch", "start", "run")
+
+
 def execute(command_text: str, state: AppState) -> ExecutorResult:
     """Open an application matching the spoken name."""
     try:
         app_name = _extract_app_name(command_text)
-        if not app_name:
-            return ExecutorResult(success=False, speak="I didn't catch which app to open.")
+        # _extract_app_name() never returns truly empty for a recognized
+        # trigger verb alone (e.g. "open" -> "open", not "") - so the bare
+        # verb itself is the real "nothing usable" signal here, not just
+        # an empty string.
+        if not app_name or app_name.lower() in _BARE_TRIGGER_VERBS:
+            from core.slot_extractor import extract_slot
+
+            refined = extract_slot(command_text, "the name of the application to open")
+            if refined:
+                app_name = refined
+            if not app_name or app_name.lower() in _BARE_TRIGGER_VERBS:
+                return ExecutorResult(success=False, speak="I didn't catch which app to open.")
 
         protocol = _PROTOCOL_ALIASES.get(app_name.lower())
         if protocol:
@@ -157,11 +189,11 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
         if app_name.lower() not in _ALIASES:
             last_folder = state.get_last_folder()
             if last_folder:
-                from executors.file_executor import _find_subfolder, _open_path
+                from executors.file_executor import _find_subfolder, _open_resolved
 
-                subfolder = _find_subfolder(app_name, [last_folder])
+                subfolder, confident = _find_subfolder(app_name, [last_folder])
                 if subfolder is not None:
-                    return _open_path(subfolder, state)
+                    return _open_resolved(subfolder, confident, state)
 
         index = _get_index()
         if not index:
@@ -183,8 +215,18 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
         path = index[matched_name]
         logger.debug("Matched app %r -> %r (score=%d)", app_name, path, score)
 
-        subprocess.Popen(path, shell=True)
-        return ExecutorResult(success=True, speak=f"Opening {app_name}")
+        def _launch() -> ExecutorResult:
+            subprocess.Popen(path, shell=True)
+            return ExecutorResult(success=True, speak=f"Opening {app_name}")
+
+        if score < _CONFIDENT_SCORE:
+            return ExecutorResult(
+                success=True,
+                speak="",
+                confirm=f"Did you mean {matched_name}?",
+                on_confirm=_launch,
+            )
+        return _launch()
     except Exception:
         logger.exception("app_executor failed")
         return ExecutorResult(success=False, speak="I couldn't open that app.")
@@ -192,5 +234,5 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
 
 if __name__ == "__main__":
     _state = AppState()
-    for cmd in ["open notepad", "launch chrome", "start some nonexistent app xyz123"]:
+    for cmd in ["open notepad", "launch chrome", "start some nonexistent app xyz123", "open"]:
         print(cmd, "->", execute(cmd, _state))

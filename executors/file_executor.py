@@ -81,11 +81,15 @@ _MAX_SUBFOLDER_DEPTH = 3
 _FUZZY_SUBFOLDER_THRESHOLD = 70
 
 
-def _find_subfolder(name: str, base_dirs: list[str], max_depth: int = _MAX_SUBFOLDER_DEPTH) -> str | None:
+def _find_subfolder(
+    name: str, base_dirs: list[str], max_depth: int = _MAX_SUBFOLDER_DEPTH
+) -> tuple[str | None, bool]:
     """Search base_dirs for a subdirectory whose name matches `name`.
 
-    Tries exact match, then substring match, then fuzzy match (to tolerate
-    STT mis-transcriptions like "codecs" for "CODEX").
+    Returns (path, confident). Tries exact match, then substring match
+    (both confident), then fuzzy match (NOT confident - it exists to
+    tolerate STT mis-transcriptions like "codecs" for "CODEX", so a hit
+    is a guess the caller should confirm before opening).
     """
     name_lower = name.lower()
     candidates: list[tuple[str, str]] = []  # (dir_name_lower, full_path)
@@ -104,11 +108,11 @@ def _find_subfolder(name: str, base_dirs: list[str], max_depth: int = _MAX_SUBFO
 
     for d_lower, path in candidates:
         if d_lower == name_lower:
-            return path
+            return path, True
 
     for d_lower, path in candidates:
         if name_lower in d_lower:
-            return path
+            return path, True
 
     best_path = None
     best_score = 0
@@ -118,9 +122,9 @@ def _find_subfolder(name: str, base_dirs: list[str], max_depth: int = _MAX_SUBFO
             best_score = score
             best_path = path
     if best_score >= _FUZZY_SUBFOLDER_THRESHOLD:
-        return best_path
+        return best_path, False
 
-    return None
+    return None, True
 
 
 def _navigate_existing_explorer(path: str) -> bool:
@@ -154,14 +158,16 @@ def _open_path(path: str, state: AppState, label: str | None = None) -> Executor
         return ExecutorResult(success=False, speak="I couldn't open that folder")
 
 
-def _resolve_named_folder(name: str) -> str | None:
-    """Find a folder named `name` among the known roots or their subfolders."""
+def _resolve_named_folder(name: str) -> tuple[str | None, bool]:
+    """Find a folder named `name` among the known roots or their subfolders.
+
+    Returns (path, confident), same contract as _find_subfolder."""
     name = re.sub(r"\bfolder\b", "", name, flags=re.IGNORECASE).strip()
     if not name:
-        return None
+        return None, True
     key = name.lower()
     if key in _FOLDER_MAP:
-        return _FOLDER_MAP[key]
+        return _FOLDER_MAP[key], True
     return _find_subfolder(name, list(_FOLDER_MAP.values()))
 
 
@@ -176,15 +182,33 @@ def _open_nested_folder(command_text: str, state: AppState) -> ExecutorResult | 
         return None
 
     child_name, parent_name = match.group(1).strip(), match.group(2).strip()
-    parent_path = _resolve_named_folder(parent_name)
+    parent_path, parent_confident = _resolve_named_folder(parent_name)
     if parent_path is None:
         return ExecutorResult(success=False, speak=f"I couldn't find a folder called {parent_name}")
+    parent_base = os.path.basename(parent_path.rstrip(os.sep))
 
-    child_path = _find_subfolder(child_name, [parent_path])
+    child_path, child_confident = _find_subfolder(child_name, [parent_path])
     if child_path is not None:
-        return _open_path(child_path, state)
+        if parent_confident and child_confident:
+            return _open_path(child_path, state)
+        # Multi-hop resolution where at least one hop was a fuzzy guess -
+        # say what was actually resolved and check before opening.
+        child_base = os.path.basename(child_path.rstrip(os.sep))
+        return ExecutorResult(
+            success=True,
+            speak="",
+            confirm=f"Opening {child_base} inside {parent_base}. Is that right?",
+            on_confirm=lambda p=child_path: _open_path(p, state),
+        )
 
-    return _open_path(parent_path, state)
+    # Child not found at all: offer the parent rather than silently
+    # opening it (the old behavior), so a mis-resolved chain is caught.
+    return ExecutorResult(
+        success=True,
+        speak="",
+        confirm=f"I couldn't find {child_name} inside {parent_base}. Open {parent_base} instead?",
+        on_confirm=lambda p=parent_path: _open_path(p, state),
+    )
 
 
 def _open_special(command_text: str, state: AppState) -> ExecutorResult | None:
@@ -216,6 +240,20 @@ def _open_special(command_text: str, state: AppState) -> ExecutorResult | None:
     return None
 
 
+def _open_resolved(path: str, confident: bool, state: AppState) -> ExecutorResult:
+    """Open a resolved folder directly, or via confirmation when the
+    resolution was a fuzzy guess (e.g. "dell" heard as "then")."""
+    if confident:
+        return _open_path(path, state)
+    base = os.path.basename(path.rstrip(os.sep))
+    return ExecutorResult(
+        success=True,
+        speak="",
+        confirm=f"Did you mean the folder {base}?",
+        on_confirm=lambda: _open_path(path, state),
+    )
+
+
 def _open_folder(command_text: str, state: AppState) -> ExecutorResult | None:
     """Handle 'open X folder' / 'open X' / 'open X Y folder' commands."""
     command_text = normalize_command(command_text)
@@ -230,14 +268,14 @@ def _open_folder(command_text: str, state: AppState) -> ExecutorResult | None:
         remaining = [w for w in words if w != key]
 
         if remaining:
-            subfolder = _find_subfolder(" ".join(remaining), [parent_path])
+            subfolder, confident = _find_subfolder(" ".join(remaining), [parent_path])
             if subfolder is None and len(remaining) > 1:
                 for word in remaining:
-                    subfolder = _find_subfolder(word, [parent_path])
+                    subfolder, confident = _find_subfolder(word, [parent_path])
                     if subfolder is not None:
                         break
             if subfolder is not None:
-                return _open_path(subfolder, state)
+                return _open_resolved(subfolder, confident, state)
 
         return _open_path(parent_path, state)
 
@@ -246,18 +284,18 @@ def _open_folder(command_text: str, state: AppState) -> ExecutorResult | None:
         # then "open dell" resolves "dell" inside Documents first.
         last_folder = state.get_last_folder()
         if last_folder:
-            subfolder = _find_subfolder(" ".join(words), [last_folder])
+            subfolder, confident = _find_subfolder(" ".join(words), [last_folder])
             if subfolder is not None:
-                return _open_path(subfolder, state)
+                return _open_resolved(subfolder, confident, state)
 
-        subfolder = _find_subfolder(" ".join(words), list(_FOLDER_MAP.values()))
+        subfolder, confident = _find_subfolder(" ".join(words), list(_FOLDER_MAP.values()))
         if subfolder is None and len(words) > 1:
             for word in words:
-                subfolder = _find_subfolder(word, list(_FOLDER_MAP.values()))
+                subfolder, confident = _find_subfolder(word, list(_FOLDER_MAP.values()))
                 if subfolder is not None:
                     break
         if subfolder is not None:
-            return _open_path(subfolder, state)
+            return _open_resolved(subfolder, confident, state)
 
     return None
 
@@ -276,7 +314,9 @@ def _list_files(command_text: str, state: AppState) -> ExecutorResult | None:
         folder_path = _FOLDER_MAP[key]
         words = [w for w in re.findall(r"[a-zA-Z0-9']+", text) if w not in _STOPWORDS and w != key]
         if words:
-            subfolder = _find_subfolder(" ".join(words), [folder_path])
+            # Listing files is read-only, so a fuzzy guess is harmless -
+            # no confirmation needed here, unlike the open-folder paths.
+            subfolder, _confident = _find_subfolder(" ".join(words), [folder_path])
             if subfolder is not None:
                 folder_path = subfolder
     else:
@@ -379,6 +419,14 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
         if result is not None:
             return result
 
+        from core.slot_extractor import extract_slot
+
+        refined = extract_slot(text, "the name of the folder to open")
+        if refined:
+            result = _open_folder(f"open {refined}", state)
+            if result is not None:
+                return result
+
         return ExecutorResult(success=False, speak="I'm not sure which file or folder you mean.")
     except Exception:
         logger.exception("file_executor failed")
@@ -387,5 +435,5 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
 
 if __name__ == "__main__":
     _state = AppState()
-    for cmd in ["open downloads folder", "open desktop", "find my resume"]:
+    for cmd in ["open downloads folder", "open desktop", "find my resume", "open the"]:
         print(cmd, "->", execute(cmd, _state))

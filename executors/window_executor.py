@@ -26,6 +26,10 @@ logger = logging.getLogger("mimir.window_executor")
 _SWITCH_RE = re.compile(r"switch to\s+(.+)", re.IGNORECASE)
 _CLOSE_TARGET_RE = re.compile(r"^(?:close|quit|exit)\s+(.+)$", re.IGNORECASE)
 _MATCH_THRESHOLD = 60
+# Fuzzy scores between _MATCH_THRESHOLD and this are usable but shaky
+# (e.g. a mis-transcribed target like "pile explorer") - act only after
+# a spoken confirmation instead of guessing silently.
+_CONFIDENT_SCORE = 85
 
 
 def _force_foreground(hwnd: int) -> None:
@@ -60,22 +64,25 @@ def _force_foreground(hwnd: int) -> None:
             user32.AttachThreadInput(cur_thread, target_thread, False)
 
 
-def _best_window_match(search_target: str, titles: dict[str, int]) -> str | None:
+def _best_window_match(search_target: str, titles: dict[str, int]) -> tuple[str | None, bool]:
     """Find the window title best matching search_target.
 
-    Tries a substring match first - short queries like "code" or "chrome"
-    can fuzzy-score worse against unrelated titles than an exact substring
-    match would, the same pitfall as app_executor's fuzzy app lookup.
+    Returns (title, confident). Tries a substring match first - short
+    queries like "code" or "chrome" can fuzzy-score worse against
+    unrelated titles than an exact substring match would, the same
+    pitfall as app_executor's fuzzy app lookup. Substring hits and
+    high-scoring fuzzy hits are confident; low-scoring fuzzy hits are
+    not, and callers should confirm before acting on them.
     """
     search_lower = search_target.lower()
     for title in titles:
         if search_lower in title.lower():
-            return title
+            return title, True
 
     best = process.extractOne(search_target, titles.keys())
     if best is not None and best[1] > _MATCH_THRESHOLD:
-        return best[0]
-    return None
+        return best[0], best[1] >= _CONFIDENT_SCORE
+    return None, True
 
 
 def _minimize() -> ExecutorResult:
@@ -127,13 +134,25 @@ def _switch_to(target: str) -> ExecutorResult:
         return ExecutorResult(success=False, speak="I couldn't find any open windows")
 
     search_target = _ALIASES.get(target, target)
-    best_title = _best_window_match(search_target, titles)
+    best_title, confident = _best_window_match(search_target, titles)
+    if best_title is None:
+        from core.slot_extractor import extract_slot
+
+        refined = extract_slot(target, "the name of the application or window to switch to")
+        if refined:
+            best_title, confident = _best_window_match(_ALIASES.get(refined, refined), titles)
     if best_title is None:
         return ExecutorResult(success=False, speak=f"I couldn't find a window for {target}")
 
-    hwnd = titles[best_title]
-    _force_foreground(hwnd)
-    return ExecutorResult(success=True, speak=f"Switching to {best_title}")
+    def _do_switch(title: str = best_title) -> ExecutorResult:
+        _force_foreground(titles[title])
+        return ExecutorResult(success=True, speak=f"Switching to {title}")
+
+    if not confident:
+        return ExecutorResult(
+            success=True, speak="", confirm=f"Did you mean {best_title}?", on_confirm=_do_switch
+        )
+    return _do_switch()
 
 
 def _close_target(target: str) -> ExecutorResult:
@@ -160,31 +179,62 @@ def _close_target(target: str) -> ExecutorResult:
         close_all = True
 
     if close_all:
+        weak_match = False
         matching_titles = [title for title in titles if search_target.lower() in title.lower()]
         if not matching_titles:
-            best_title = _best_window_match(search_target, titles)
+            best_title, confident = _best_window_match(search_target, titles)
             matching_titles = [best_title] if best_title else []
+            weak_match = not confident
         if not matching_titles:
             return ExecutorResult(success=False, speak=f"I couldn't find a window for {target}")
-        for title in matching_titles:
-            win32gui.PostMessage(titles[title], win32con.WM_CLOSE, 0, 0)
 
-        # Confirm with the resolved window title(s), not the raw (possibly
+        # Speak the resolved window title(s), not the raw (possibly
         # mis-transcribed) spoken target - e.g. "pile explorer" should be
-        # confirmed back as "File Explorer", what was actually closed.
+        # confirmed back as "File Explorer", what is actually being closed.
         count = len(matching_titles)
         distinct_names = sorted(set(matching_titles))
-        label = distinct_names[0] if len(distinct_names) == 1 else target
-        speak = f"Closing {count} {label} windows" if count > 1 else f"Closing {label}"
-        return ExecutorResult(success=True, speak=speak)
+        # Fall back to the target *without* any "all " prefix - it reads as
+        # part of the window name in the spoken question otherwise.
+        label = distinct_names[0] if len(distinct_names) == 1 else cleaned_target
 
-    best_title = _best_window_match(search_target, titles)
+        def _do_close_all() -> ExecutorResult:
+            for title in matching_titles:
+                win32gui.PostMessage(titles[title], win32con.WM_CLOSE, 0, 0)
+            speak = f"Closing {count} {label} windows" if count > 1 else f"Closing {label}"
+            return ExecutorResult(success=True, speak=speak)
+
+        if count > 1:
+            return ExecutorResult(
+                success=True,
+                speak="",
+                confirm=f"That will close {count} {label} windows. Go ahead?",
+                on_confirm=_do_close_all,
+            )
+        if weak_match:
+            return ExecutorResult(
+                success=True, speak="", confirm=f"Did you mean {label}?", on_confirm=_do_close_all
+            )
+        return _do_close_all()
+
+    best_title, confident = _best_window_match(search_target, titles)
+    if best_title is None:
+        from core.slot_extractor import extract_slot
+
+        refined = extract_slot(target, "the name of the application or window to close")
+        if refined:
+            best_title, confident = _best_window_match(_ALIASES.get(refined, refined), titles)
     if best_title is None:
         return ExecutorResult(success=False, speak=f"I couldn't find a window for {target}")
 
-    hwnd = titles[best_title]
-    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-    return ExecutorResult(success=True, speak=f"Closing {best_title}")
+    def _do_close_one(title: str = best_title) -> ExecutorResult:
+        win32gui.PostMessage(titles[title], win32con.WM_CLOSE, 0, 0)
+        return ExecutorResult(success=True, speak=f"Closing {title}")
+
+    if not confident:
+        return ExecutorResult(
+            success=True, speak="", confirm=f"Close {best_title}?", on_confirm=_do_close_one
+        )
+    return _do_close_one()
 
 
 def _lock_screen() -> ExecutorResult:
@@ -206,7 +256,14 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
             return _lock_screen()
 
         if "sleep" in text:
-            return _sleep()
+            # Suspends the PC immediately - a false trigger strands the user,
+            # so always confirm.
+            return ExecutorResult(
+                success=True,
+                speak="",
+                confirm="That will put the computer to sleep. Should I?",
+                on_confirm=_sleep,
+            )
 
         match = _SWITCH_RE.search(text)
         if match:
@@ -236,5 +293,5 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
 
 if __name__ == "__main__":
     _state = AppState()
-    for cmd in ["minimise this", "lock the screen"]:
+    for cmd in ["minimise this", "lock the screen", "switch to zzz nonexistent gibberish"]:
         print(cmd, "->", execute(cmd, _state))

@@ -16,3 +16,9 @@ pystray
 Pillow
 pyyaml
 ollama
+noisereduce
+# Speaker verification (core/speaker_verify.py, enroll_voice.py) - unlike
+# the wake-word training tooling, torch is a genuine runtime dependency
+# here: resemblyzer's voice encoder loads every time MIMIR starts.
+resemblyzer
+torch

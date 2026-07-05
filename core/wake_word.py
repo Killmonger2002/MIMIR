@@ -59,24 +59,66 @@ class WakeWordListener:
             logger.exception("Failed to initialize openWakeWord model")
             return
 
+        # Per-model consecutive-chunk counters, not a single shared scalar:
+        # the loaded Model covers multiple pretrained wakewords at once
+        # (alexa, hey_jarvis, hey_mycroft, etc. when model_path is unset),
+        # and a shared counter would let chunk N's high score on model A
+        # and chunk N+1's high score on model B incorrectly accumulate as
+        # one model's 2 consecutive hits.
+        activation_counts: dict[str, int] = {}
+        min_chunks = max(1, config.wake_word.min_activation_chunks)
+
         try:
             with sd.InputStream(
                 samplerate=_SAMPLE_RATE, channels=1, dtype="int16", blocksize=_CHUNK_SIZE, device=get_input_device()
             ) as stream:
                 while not self._stop_event.is_set():
-                    audio_chunk, _overflowed = stream.read(_CHUNK_SIZE)
-                    audio_data = audio_chunk.flatten().astype(np.int16)
+                    audio_chunk, overflowed = stream.read(_CHUNK_SIZE)
 
+                    if overflowed:
+                        # This thread just spent a whole command cycle (STT,
+                        # LLM, TTS) blocked inside _on_detected() without
+                        # reading from this stream, so the OS buffer backed
+                        # up. That backlog is stale by the time we get to it
+                        # - it may replay the tail of the user's last command,
+                        # or (without a headset) actual acoustic bleed of
+                        # MIMIR's own TTS output into the mic. Drop it and
+                        # reset the model's streaming buffers rather than
+                        # feed a time-discontinuous chunk into them.
+                        logger.debug("Input overflow detected; discarding stale backlog")
+                        while stream.read_available >= _CHUNK_SIZE:
+                            stream.read(_CHUNK_SIZE)
+                        oww_model.reset()
+                        activation_counts.clear()
+                        continue
+
+                    audio_data = audio_chunk.flatten().astype(np.int16)
                     predictions = oww_model.predict(audio_data)
 
-                    if self._state.is_paused():
+                    # is_paused(): user explicitly paused MIMIR via hotkey/tray.
+                    # mode == "speaking": defensive - the command cycle
+                    # currently runs synchronously on this same thread so
+                    # this can't fire mid-cycle today, but skip anyway in
+                    # case that threading model ever changes.
+                    if self._state.is_paused() or self._state.get_mode() == "speaking":
+                        activation_counts.clear()
                         continue
 
                     for model_name, score in predictions.items():
                         if score > config.wake_word.sensitivity:
-                            logger.debug("Wake word detected (model=%s, score=%.2f)", model_name, score)
-                            self._on_detected()
-                            break
+                            activation_counts[model_name] = activation_counts.get(model_name, 0) + 1
+                            if activation_counts[model_name] >= min_chunks:
+                                logger.debug(
+                                    "Wake word detected (model=%s, score=%.2f, consecutive_chunks=%d)",
+                                    model_name,
+                                    score,
+                                    activation_counts[model_name],
+                                )
+                                activation_counts.clear()
+                                self._on_detected()
+                                break
+                        else:
+                            activation_counts[model_name] = 0
         except Exception:
             logger.exception("Wake word listener crashed")
 

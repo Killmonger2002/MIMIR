@@ -19,8 +19,9 @@ import win32event
 import winerror
 
 from config import config
-from core import stt, tts, wake_word
+from core import confirmer, sound_cues, stt, tts, wake_word
 from core.intent_router import classify
+from executors.base import ExecutorResult
 from state import AppState
 from system.hotkey import HotkeyManager
 from system.lifecycle import LifecycleManager
@@ -74,46 +75,102 @@ class Mimir:
         self.hotkeys = HotkeyManager(self.state, on_quit=self.shutdown)
         self.wake_word_listener = wake_word.WakeWordListener(self.state, on_detected=self._on_wake_word)
         self.tray: TrayIcon | None = None
+        # Guards against the wake-word listener and the manual "Listen Now"
+        # tray button both starting a command cycle at once - they run on
+        # different threads (wake-word's own thread vs. pystray's), unlike
+        # a normal wake-word cycle where the listener thread is simply
+        # blocked for the duration and can't re-trigger itself.
+        self._command_cycle_lock = threading.Lock()
 
     def _on_wake_word(self) -> None:
         """Callback fired by the wake-word listener; runs the command loop."""
+        if not self._command_cycle_lock.acquire(blocking=False):
+            logger.info("Wake word detected while already handling a command; ignoring")
+            return
         try:
             self._handle_command_cycle()
         except Exception:
             logger.exception("Unexpected error in command handling")
             tts.speak("Sorry, something went wrong with that.", self.state)
             self.state.set_mode("idle")
+        finally:
+            self._command_cycle_lock.release()
+
+    def _on_listen_now(self) -> None:
+        """Callback fired by the tray's "Listen Now" button - a manual
+        fallback for when the wake word doesn't fire. Runs the exact same
+        command cycle a spoken wake word would, on its own thread so the
+        tray/pystray callback isn't blocked for the whole interaction."""
+        if not self._command_cycle_lock.acquire(blocking=False):
+            logger.info("Listen Now clicked while already handling a command; ignoring")
+            return
+
+        def _run() -> None:
+            try:
+                self._handle_command_cycle()
+            except Exception:
+                logger.exception("Unexpected error in command handling")
+                tts.speak("Sorry, something went wrong with that.", self.state)
+                self.state.set_mode("idle")
+            finally:
+                self._command_cycle_lock.release()
+
+        threading.Thread(target=_run, name="listen-now", daemon=True).start()
 
     def _handle_command_cycle(self) -> None:
-        """Listen, transcribe, route, execute, and respond - looping on followups."""
+        """Listen, transcribe, route, execute, and respond - looping on
+        followups and, once a command has been answered, a brief bounded
+        window where the user can speak again without repeating the wake
+        word."""
         first_loop = True
+        # None = wait indefinitely for speech (the normal case). Set to a
+        # bounded value only when entering the soft follow-up window below.
+        listen_timeout: float | None = None
+
         while True:
             if first_loop:
-                tts.speak("Listening", self.state)
+                sound_cues.play_listening_cue()
                 first_loop = False
 
             self.state.set_mode("listening")
-            audio = stt.record_until_silence()
+            audio = stt.record_until_silence(max_wait_sec=listen_timeout)
+            was_followup_window = listen_timeout is not None
+            listen_timeout = None
+
+            if was_followup_window and not stt.contains_speech(audio):
+                # Follow-up window expired with nothing said - go idle
+                # quietly, no re-prompt needed.
+                self.state.set_mode("idle")
+                return
 
             self.state.set_mode("thinking")
-            transcript = stt.transcribe(audio)
+            transcript, confidence = stt.transcribe_with_confidence(audio)
 
             if not transcript:
                 self.state.set_mode("idle")
                 return
+
+            if confidence < config.confirmation.stt_logprob_threshold:
+                logger.info("Low STT confidence (%.2f) for %r, confirming", confidence, transcript)
+                if not confirmer.confirm(f"I'm not sure I heard that right. Did you say: {transcript}?", self.state):
+                    tts.speak("Okay, tell me again.", self.state)
+                    continue  # re-listen for the corrected command
 
             executor_name = classify(transcript)
 
             if executor_name == "unknown":
                 result_speak = "I didn't understand that command."
                 self.state.add_log_entry(transcript, result_speak, executor_name)
-                tts.speak(result_speak, self.state)
+                if tts.speak(result_speak, self.state):
+                    listen_timeout = None  # interrupted - go straight into listening again
+                    continue
                 self.state.set_mode("idle")
                 return
 
             try:
                 executor_module = importlib.import_module(f"executors.{executor_name}")
                 result = executor_module.execute(transcript, self.state)
+                result = self._resolve_confirmation(result)
             except Exception:
                 logger.exception("Executor %s raised an exception", executor_name)
                 result = type(
@@ -129,22 +186,48 @@ class Mimir:
 
             self.state.add_log_entry(transcript, result.speak, executor_name)
 
-            tts.speak(result.speak, self.state)
+            was_interrupted = tts.speak(result.speak, self.state)
 
             if getattr(result, "shutdown", False):
                 self.shutdown()
                 return
 
-            if not result.needs_followup:
-                self.state.set_mode("idle")
-                return
-            # Loop again immediately to capture the follow-up answer.
+            if was_interrupted:
+                listen_timeout = None  # unbounded - the user is already talking
+                continue
+
+            if result.needs_followup:
+                continue  # unbounded - the executor expects a definite reply
+
+            if config.followup.enabled:
+                listen_timeout = config.followup.window_sec
+                continue  # bounded window - loop back to listen briefly
+
+            self.state.set_mode("idle")
+            return
+
+    def _resolve_confirmation(self, result) -> ExecutorResult:
+        """Ask any pending yes/no question on an executor result and run the
+        deferred action on yes; cancel on no/silence. Loops in case an
+        on_confirm action itself asks a follow-up question (capped so a
+        buggy executor can't trap the user in an endless interrogation)."""
+        for _ in range(3):
+            question = getattr(result, "confirm", None)
+            if not question:
+                return result
+            if not confirmer.confirm(question, self.state):
+                return ExecutorResult(success=True, speak="Okay, cancelled.")
+            on_confirm = getattr(result, "on_confirm", None)
+            if on_confirm is None:
+                return result
+            result = on_confirm()
+        return result
 
     def shutdown(self) -> None:
         """Run the full shutdown sequence: announce, stop threads, exit."""
         logger.info("Shutdown requested")
         self.state.set_mode("shutting_down")
-        tts.speak("MIMIR shutting down", self.state)
+        tts.speak("MIMIR shutting down", self.state, allow_interrupt=False)
 
         # Run the actual stop/join sequence on a dedicated thread. shutdown()
         # can be invoked from the wake-word listener's own thread (voice
@@ -163,13 +246,30 @@ class Mimir:
         time.sleep(0.5)
         os._exit(0)
 
+    def _prewarm(self) -> None:
+        """Load slow-to-initialize resources on background threads at
+        startup - the Whisper model and the installed-app index - so the
+        first spoken command doesn't stall on a multi-second model load
+        or a Program Files walk that would otherwise happen lazily on
+        first use. Runs concurrently with the startup TTS greeting below,
+        which loads Piper as a side effect on the main thread."""
+        threading.Thread(target=stt.get_model, name="prewarm-stt", daemon=True).start()
+
+        def _prewarm_app_index() -> None:
+            from executors.app_executor import _get_index
+
+            _get_index()
+
+        threading.Thread(target=_prewarm_app_index, name="prewarm-appindex", daemon=True).start()
+
     def run(self) -> None:
         """Start all subsystems and run the tray icon on the main thread."""
         _setup_logging()
         logger.info("MIMIR starting up")
 
         self.state.set_mode("idle")
-        tts.speak("MIMIR at your service", self.state)
+        self._prewarm()
+        tts.speak("MIMIR at your service", self.state, allow_interrupt=False)
 
         self.wake_word_listener.start()
         self.hotkeys.start()
@@ -179,6 +279,7 @@ class Mimir:
             self.state,
             on_open_transcript=lambda: open_transcript_window(self.state),
             on_open_settings=lambda: open_settings_window(),
+            on_listen_now=self._on_listen_now,
             on_quit=self.shutdown,
         )
         self.tray.run()

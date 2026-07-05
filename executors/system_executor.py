@@ -36,7 +36,13 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
     text = normalize_command(command_text)
 
     if _QUIT_RE.search(text):
-        return ExecutorResult(success=True, speak="Goodbye.", shutdown=True)
+        # A mishearing here kills the assistant, so always confirm first.
+        return ExecutorResult(
+            success=True,
+            speak="",
+            confirm="That will shut down MIMIR. Are you sure?",
+            on_confirm=lambda: ExecutorResult(success=True, speak="Goodbye.", shutdown=True),
+        )
 
     return ExecutorResult(success=True, speak=_CAPABILITIES)
 
