@@ -8,6 +8,9 @@ audio:
   # delay before you can even start talking. Set false for no cue at all
   # (rely on the tray icon turning green instead).
   listening_cue_enabled: true
+  # "chime" (fast two-tone beep) or "voice" (a quick spoken "Yes?" -
+  # slower, but unmistakable if the chime is too easy to miss).
+  listening_cue_style: chime
 confirmation:
   # Ask a spoken yes/no question before uncertain matches (fuzzy folder/
   # window/app guesses) and destructive actions (shutdown, sleep,
@@ -31,14 +34,33 @@ lifecycle:
   check_interval_seconds: 30
   idle_unload_minutes: 5
 llm:
-  model: phi3:mini
+  # Tiered local models ("big brother protocol"): tier 1 routes commands,
+  # tier 2 drafts/summarizes/calls tools, tier 3 handles long documents
+  # and complex reasoning. Higher tiers fall back to lower ones when the
+  # machine can't run them - MIMIR stays useful (regex-only) even with no
+  # Ollama at all. Pull the models per models/README.md.
+  # Benchmarked winner for routing (see benchmark_llm_tier1.py) - beats
+  # larger phi3:mini on classification while using half the RAM.
+  model: qwen2.5:1.5b
   num_predict: 5
   temperature: 0
-  # How long to wait for Ollama before giving up and falling back to
-  # "unknown" - only affects commands the regex tier can't classify.
-  # Lower = faster failure when Ollama is slow/unreachable, at the risk of
-  # giving up on a legitimately-slow-but-correct response.
-  timeout_sec: 1.5
+  # Warm-inference timeout for tier 1 (routing/slot extraction). Measured
+  # ~0.6s steady-state on a 16GB CPU-only machine; cold model loads are
+  # handled separately with a longer internal timeout.
+  timeout_sec: 10.0
+  tier1_keep_alive: 30m
+  # ~4.7GB at Q4; needs roughly 8GB+ total RAM to run without thrashing.
+  tier2_model: qwen2.5:7b
+  tier2_keep_alive: 10m
+  tier2_timeout_sec: 60.0
+  # ~9GB at Q4; auto-disabled below tier3_min_ram_gb total RAM, and never
+  # kept resident (loads on demand, unloads right after).
+  tier3_model: qwen2.5:14b
+  tier3_timeout_sec: 180.0
+  tier3_min_ram_gb: 15.0
+  # Launch `ollama serve` automatically at startup when Ollama is
+  # installed but not running.
+  autostart_ollama: true
 media:
   # How many Right-Arrow seek-forward presses "skip ad" sends to the
   # foreground window (works on YouTube/Netflix/Vimeo-style players where

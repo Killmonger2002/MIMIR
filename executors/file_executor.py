@@ -138,6 +138,17 @@ def _navigate_existing_explorer(path: str) -> bool:
             try:
                 if window.FullName.lower().endswith("explorer.exe"):
                     window.Navigate2(path)
+                    # Bring the reused window to the front - without this
+                    # the navigation happens silently behind whatever the
+                    # user is looking at, which reads as "nothing
+                    # happened" even though MIMIR announced success
+                    # (observed exactly this way in live testing).
+                    try:
+                        from executors.window_executor import _force_foreground
+
+                        _force_foreground(window.HWND)
+                    except Exception:
+                        logger.debug("Couldn't bring the Explorer window to the front", exc_info=True)
                     return True
             except Exception:
                 continue

@@ -129,7 +129,12 @@ class Mimir:
 
         while True:
             if first_loop:
-                sound_cues.play_listening_cue()
+                if config.audio.listening_cue_style == "voice":
+                    # Slower than the chime, but unmistakable - for users
+                    # who find a tone too easy to miss.
+                    tts.speak("Yes?", self.state, allow_interrupt=False)
+                else:
+                    sound_cues.play_listening_cue()
                 first_loop = False
 
             self.state.set_mode("listening")
@@ -152,9 +157,23 @@ class Mimir:
 
             if confidence < config.confirmation.stt_logprob_threshold:
                 logger.info("Low STT confidence (%.2f) for %r, confirming", confidence, transcript)
-                if not confirmer.confirm(f"I'm not sure I heard that right. Did you say: {transcript}?", self.state):
+                verdict, reply = confirmer.confirm_with_reply(
+                    f"I'm not sure I heard that right. Did you say: {transcript}?", self.state
+                )
+                if verdict is False or (verdict is None and not reply.strip()):
                     tts.speak("Okay, tell me again.", self.state)
                     continue  # re-listen for the corrected command
+                if verdict is None:
+                    # Reply wasn't yes/no but was a real phrase - the user
+                    # most likely just restated what they meant rather
+                    # than literally answering the question. Use it as
+                    # the actual command instead of discarding it and
+                    # asking a third time (this exact pattern caused a
+                    # real user-frustration cascade that ended in an
+                    # unwanted shutdown - see UX_LOG for the trace).
+                    logger.info("Confirmation reply %r wasn't yes/no; using it as the command instead", reply)
+                    transcript = reply
+                # else verdict is True: proceed with the original transcript, now trusted
 
             executor_name = classify(transcript)
 
@@ -261,6 +280,33 @@ class Mimir:
             _get_index()
 
         threading.Thread(target=_prewarm_app_index, name="prewarm-appindex", daemon=True).start()
+
+        def _check_llm() -> None:
+            # Detect/start Ollama once at startup, and say so plainly when
+            # the LLM tiers are unavailable - the silent per-request
+            # timeouts previously hid a never-installed Ollama for weeks.
+            from core.llm_runtime import get_status, warm_up
+
+            status = get_status()
+            if not status["server"]:
+                logger.warning(
+                    "LLM tiers unavailable (Ollama not installed or not startable) - "
+                    "running regex-only. See models/README.md."
+                )
+                return
+            for tier, info in status["tiers"].items():
+                usable = info["ram_ok"] and info["pulled"]
+                logger.info(
+                    "LLM tier %s (%s): %s",
+                    tier,
+                    info["model"],
+                    "ready" if usable else ("not pulled" if info["ram_ok"] else "RAM-gated off"),
+                )
+            # Load tier 1 into RAM now (it stays warm via keep_alive) so
+            # the first misrouted command doesn't pay the disk-load cost.
+            warm_up(tier=1)
+
+        threading.Thread(target=_check_llm, name="prewarm-llm", daemon=True).start()
 
     def run(self) -> None:
         """Start all subsystems and run the tray icon on the main thread."""

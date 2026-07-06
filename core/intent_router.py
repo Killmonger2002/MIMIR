@@ -88,6 +88,21 @@ _PATTERNS: list[tuple[str, list[str]]] = [
         ],
     ),
     (
+        "model_executor",
+        [
+            # Fully anchored so it decisively outscores window_executor's
+            # "^switch to .+" catch-all on phrases like "switch to the
+            # smartest model" (verified in the self-test below).
+            r"^switch to (a |the )?(smartest|smarter|bigger|biggest|better|best|maximum|basic|smaller|simpler|default|normal|fastest) (model|brain)$",
+            r"\b(smartest|smarter|bigger|biggest|better|best|maximum|basic|smaller|simpler|default|normal|fastest) (model|brain)\b",
+            r"\bget (smarter|smartest|simpler|dumber)\b",
+            r"\bthink harder\b",
+            r"\b(which|what) (model|brain)\b",
+            r"\bhow smart are you\b",
+            r"\bsave (some )?(memory|ram|resources)\b",
+        ],
+    ),
+    (
         "window_executor",
         [
             r"\b(minimi[sz]e|maximi[sz]e)\b",
@@ -125,8 +140,12 @@ _PATTERNS: list[tuple[str, list[str]]] = [
         "system_executor",
         [
             r"\bwhat can you do\b",
-            r"\b(list|show)\b.*\b(commands?|capabilities)\b",
+            r"\b(list|show|tell)\b.*\b(commands?|capabilities)\b",
+            r"\bwhat commands\b",
             r"^help$",
+            # "Can you hear me?" reaches the router as "hear me" ("can you"
+            # is stripped as a filler prefix by normalize_command).
+            _system_executor._HEAR_ME_RE.pattern,
             _system_executor._QUIT_RE.pattern,
         ],
     ),
@@ -302,35 +321,25 @@ def _regex_classify_scored(text: str) -> tuple[str | None, float, str | None, fl
 
 
 def _llm_classify(text: str) -> str:
-    """Ask the local Ollama model to classify the command."""
-    try:
-        import ollama
+    """Ask the local tier-1 model to classify the command."""
+    from core.llm_runtime import generate
 
-        from config import config
+    categories_str = ", ".join(_LLM_CATEGORIES)
+    prompt = (
+        f"Classify this voice command into exactly one category: "
+        f"[{categories_str}]. Reply with ONLY the category name.\n\n"
+        f"Command: {text}"
+    )
+    response = generate(prompt, tier=1)
+    if response is None:
+        logger.warning("LLM classification unavailable (no usable tier)")
+        return "unknown"
 
-        categories_str = ", ".join(_LLM_CATEGORIES)
-        prompt = (
-            f"Classify this voice command into exactly one category: "
-            f"[{categories_str}]. Reply with ONLY the category name.\n\n"
-            f"Command: {text}"
-        )
-        client = ollama.Client(timeout=config.llm.timeout_sec)
-        response = client.generate(
-            model=config.llm.model,
-            prompt=prompt,
-            options={
-                "num_predict": config.llm.num_predict,
-                "temperature": config.llm.temperature,
-            },
-        )
-        category = response.get("response", "").strip().lower()
-        for valid in _LLM_CATEGORIES:
-            if valid in category:
-                return valid
-        return "unknown"
-    except Exception as exc:
-        logger.warning("LLM classification unavailable: %s", exc)
-        return "unknown"
+    category = response.strip().lower()
+    for valid in _LLM_CATEGORIES:
+        if valid in category:
+            return valid
+    return "unknown"
 
 
 def classify(text: str) -> str:
@@ -406,6 +415,18 @@ if __name__ == "__main__":
         ("shut yourself down", "system_executor"),  # entry #13, shutdown phrasing variant
         ("go to documents codex folder", "file_executor"),  # entry #8, nested folder phrasing
         ("quit mimir", "system_executor"),  # window_executor's close/quit/exit pattern must not swallow this
+        # Live-testing failures observed 2026-07-06:
+        ("ok, open documents folder", "file_executor"),  # "ok," prefix broke every ^verb anchor
+        ("can you hear me", "system_executor"),  # arrives as "hear me" after filler stripping
+        ("can you hear me right now", "system_executor"),
+        ("what commands can you accept", "system_executor"),
+        # User-controlled model switching - must beat window_executor's
+        # "^switch to .+" catch-all:
+        ("switch to the smartest model", "model_executor"),
+        ("switch to a smarter model", "model_executor"),
+        ("switch to the basic model", "model_executor"),
+        ("get smarter", "model_executor"),
+        ("which model are you using", "model_executor"),
     ]
 
     mismatches = 0

@@ -10,8 +10,11 @@ import re
 
 # Stripped repeatedly from the front of the transcript before classification,
 # so polite phrasing like "Please open notepad" routes the same as "open notepad".
+# Includes conversational lead-ins ("Ok, open documents folder" was observed
+# live routing to "unknown" because the "ok," prefix broke every ^verb anchor).
 _FILLER_PREFIX_RE = re.compile(
-    r"^(please|hey( mimir)?|mimir|can you|could you|would you|will you)[\s,]+",
+    r"^(please|hey( mimir)?|mimir|can you|could you|would you|will you|"
+    r"ok(ay)?|alright|so|now|um+|uh+)[\s,]+",
     re.IGNORECASE,
 )
 

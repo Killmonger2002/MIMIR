@@ -20,34 +20,30 @@ under models/ (already gitignored, never committed, never sent anywhere).
 Re-run this script any time to re-enroll (e.g. if verification feels too
 strict or too loose - see also speaker_verification.similarity_threshold
 in config.yaml).
+
+This is also available as a UI wizard in MIMIR's Settings window (see
+ui/voice_training_window.py) if you'd rather not use the terminal - both
+call the exact same core.voice_profile.enroll_from_samples() underneath.
 """
 
 from __future__ import annotations
 
 import sys
 
-import numpy as np
-
-_N_SAMPLES = 4
-_PHRASES = [
-    "Hey Mimir, this is my voice.",
-    "The quick brown fox jumps over the lazy dog.",
-    "Please open my documents folder.",
-    "This is a sample of how I sound when I talk.",
-]
+from core.voice_profile import ENROLLMENT_PHRASES, MIN_ENROLLMENT_SAMPLES
 
 
 def main() -> None:
     from core import stt
-    from core.voice_profile import save_profile
-    from resemblyzer import preprocess_wav
+    from core.voice_profile import enroll_from_samples
 
-    print(f"Recording {_N_SAMPLES} short samples of your voice.")
+    print(f"Recording {len(ENROLLMENT_PHRASES)} short samples of your voice.")
     print("Speak clearly, in a normal voice, ideally somewhere quiet.\n")
 
-    raw_samples: list[np.ndarray] = []
-    for i, phrase in enumerate(_PHRASES[:_N_SAMPLES], start=1):
-        input(f"[{i}/{_N_SAMPLES}] Press Enter, then say: {phrase!r}")
+    raw_samples = []
+    for i, (phrase, guidance) in enumerate(ENROLLMENT_PHRASES, start=1):
+        print(f"({guidance})")
+        input(f"[{i}/{len(ENROLLMENT_PHRASES)}] Press Enter, then say: {phrase!r}")
         print("Recording...")
         audio = stt.record_until_silence()
         duration = len(audio) / stt.config.stt.sample_rate
@@ -57,24 +53,18 @@ def main() -> None:
         print(f"  Captured {duration:.1f}s.")
         raw_samples.append(audio)
 
-    if len(raw_samples) < 2:
+    if len(raw_samples) < MIN_ENROLLMENT_SAMPLES:
         print("\nNot enough usable samples were recorded. Run this script again.")
         sys.exit(1)
 
     print("\nProcessing samples...")
-    from core.voice_profile import _get_encoder
-
-    preprocessed = [preprocess_wav(a, source_sr=stt.config.stt.sample_rate) for a in raw_samples]
-    preprocessed = [w for w in preprocessed if len(w) > 0]
-    if len(preprocessed) < 2:
-        print("Samples were too quiet/short after processing. Run this script again in a quieter spot.")
+    try:
+        embedding = enroll_from_samples(raw_samples, stt.config.stt.sample_rate)
+    except ValueError as exc:
+        print(str(exc))
         sys.exit(1)
 
-    encoder = _get_encoder()
-    embedding = encoder.embed_speaker(preprocessed)
-    save_profile(embedding)
-
-    print(f"\nVoice profile saved from {len(preprocessed)} samples.")
+    print(f"\nVoice profile saved from {len(raw_samples)} samples.")
     print("Restart MIMIR for speaker verification to take effect.")
 
     # Sanity check: one held-out sample's similarity against the profile
@@ -82,12 +72,19 @@ def main() -> None:
     # speaker_verification.similarity_threshold in config.yaml.
     input("\nOptional check - press Enter, then say one more short phrase:")
     print("Recording...")
+    from resemblyzer import preprocess_wav
+
+    from core.voice_profile import _get_encoder
+
     check_audio = stt.record_until_silence()
     check_wav = preprocess_wav(check_audio, source_sr=stt.config.stt.sample_rate)
     if len(check_wav) == 0:
         print("That was too quiet to check.")
         return
-    check_embed = encoder.embed_utterance(check_wav)
+    check_embed = _get_encoder().embed_utterance(check_wav)
+
+    import numpy as np
+
     similarity = float(np.dot(check_embed, embedding) / (np.linalg.norm(check_embed) * np.linalg.norm(embedding)))
     print(f"Similarity to your new profile: {similarity:.2f}")
     print(f"(current threshold is {stt.config.speaker_verification.similarity_threshold:.2f} - "

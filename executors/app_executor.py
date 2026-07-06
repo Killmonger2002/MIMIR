@@ -217,7 +217,13 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
 
         def _launch() -> ExecutorResult:
             subprocess.Popen(path, shell=True)
-            return ExecutorResult(success=True, speak=f"Opening {app_name}")
+            # Announce what actually MATCHED, not the raw transcript - a
+            # mishearing like "Open Microsoft XN" that fuzzy-resolves to
+            # the Microsoft Excel shortcut should say "Opening microsoft
+            # excel", both because it's the truth about what's happening
+            # and because it's the user's only feedback that the
+            # mishearing was recovered rather than parroted back.
+            return ExecutorResult(success=True, speak=f"Opening {matched_name}")
 
         if score < _CONFIDENT_SCORE:
             return ExecutorResult(

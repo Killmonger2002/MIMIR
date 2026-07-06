@@ -41,15 +41,27 @@ models/wake_word/
 Update `wake_word.model_path` in `config.yaml` if you place the files
 elsewhere or use a custom model filename.
 
-## 4. Ollama + phi3:mini (intent classification fallback)
+## 4. Ollama + the tiered models ("big brother protocol")
 
-Ollama must be installed separately (not managed by MIMIR). Once
-installed, pull the model with internet access:
+Install Ollama from https://ollama.com/download (MIMIR auto-starts its
+server at launch, but cannot install it for you). Then pull the tier
+models:
 
 ```
-ollama pull phi3:mini
+ollama pull qwen2.5:1.5b   # Tier 1 (~1GB):  command routing (kept warm)
+ollama pull qwen2.5:7b     # Tier 2 (~4.7GB): drafting, slot extraction, tool calling
+ollama pull qwen2.5:14b    # Tier 3 (~9GB):  long documents, complex reasoning
 ```
 
-MIMIR assumes the Ollama service is reachable at its default local
-address and will call it only as a fallback when the regex intent
-classifier doesn't match.
+Tier 1 was chosen by measurement, not size: see `benchmark_llm_tier1.py`
+to re-evaluate candidates if you want to try a different routing model.
+
+Pull only the tiers your machine can handle - MIMIR checks total RAM and
+what's actually pulled, and automatically uses the best available tier
+(falling back down the ladder, or to regex-only with nothing at all):
+
+- 8GB RAM: tier 1 only (skip the other pulls)
+- 12GB RAM: tiers 1-2
+- 16GB+ RAM: all three (tier 3 loads on demand and unloads after use)
+
+Model names are configurable in `config.yaml` under `llm:`.

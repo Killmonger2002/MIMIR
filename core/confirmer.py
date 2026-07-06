@@ -14,7 +14,6 @@ import re
 
 from config import config
 from core import stt, tts
-from core.text_utils import normalize_command
 from state import AppState
 
 logger = logging.getLogger("mimir.confirmer")
@@ -33,8 +32,16 @@ _NO_RE = re.compile(
 
 
 def parse_reply(reply: str) -> bool | None:
-    """Parse a transcribed reply as yes (True), no (False), or unclear (None)."""
-    text = normalize_command(reply)
+    """Parse a transcribed reply as yes (True), no (False), or unclear (None).
+
+    Deliberately does NOT use normalize_command() here: that helper strips
+    conversational lead-ins ("ok", "alright") as command filler, but in a
+    yes/no reply those words ARE the answer - "okay then" must stay intact
+    to parse as yes.
+    """
+    text = reply.lower().strip()
+    text = re.sub(r"[,]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .!?")
     if not text:
         return None
     if _NO_RE.search(text):
@@ -44,15 +51,19 @@ def parse_reply(reply: str) -> bool | None:
     return None
 
 
-def confirm(question: str, state: AppState) -> bool:
+def confirm_with_reply(question: str, state: AppState) -> tuple[bool | None, str]:
     """Speak a yes/no question and listen for the answer.
 
-    Returns True only on a clear yes. Silence, timeout, or an unclear
-    reply all return False. If confirmation is disabled in config,
-    returns True immediately without speaking.
+    Returns (verdict, raw_reply_text). verdict is True/False for a clear
+    yes/no, or None if the reply was silence, a timeout, or a real phrase
+    that isn't yes/no - callers that need to tell those last two apart
+    (see main.py's low-confidence-transcript retry, which treats a
+    non-yes/no-but-real reply as a restated command instead of discarding
+    it) should inspect raw_reply_text themselves. If confirmation is
+    disabled in config, returns (True, "") immediately without speaking.
     """
     if not config.confirmation.enabled:
-        return True
+        return True, ""
 
     tts.speak(question, state)
 
@@ -63,6 +74,17 @@ def confirm(question: str, state: AppState) -> bool:
 
     verdict = parse_reply(reply)
     logger.info("Confirmation %r -> reply %r -> %s", question, reply, verdict)
+    return verdict, reply
+
+
+def confirm(question: str, state: AppState) -> bool:
+    """Speak a yes/no question and listen for the answer.
+
+    Returns True only on a clear yes. Silence, timeout, or an unclear
+    reply all return False. If confirmation is disabled in config,
+    returns True immediately without speaking.
+    """
+    verdict, _reply = confirm_with_reply(question, state)
     return verdict is True
 
 

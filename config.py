@@ -22,6 +22,9 @@ DEFAULTS: dict[str, Any] = {
         # perceptible ~500ms-1s delay before the user can even start
         # talking. Set false for no cue at all (rely on the tray icon).
         "listening_cue_enabled": True,
+        # "chime" (fast two-tone beep) or "voice" (a quick spoken "Yes?" -
+        # slower, but unmistakable if the chime is too easy to miss).
+        "listening_cue_style": "chime",
     },
     "wake_word": {
         "phrase": "hey mimir",
@@ -99,14 +102,38 @@ DEFAULTS: dict[str, Any] = {
         "barge_in_consecutive_chunks": 3,
     },
     "llm": {
-        "model": "phi3:mini",
+        # --- Tier 1: command routing (small, kept warm) ---
+        # qwen2.5:1.5b beat phi3:mini on classification accuracy (70% vs
+        # 50%) at 40% lower latency and half the RAM in the live
+        # benchmark (benchmark_llm_tier1.py, 2026-07-06) - and keeps the
+        # whole tier ladder in one model family. Slot extraction runs on
+        # tier 2 instead (better semantics; rare, failure-path-only).
+        "model": "qwen2.5:1.5b",
         "num_predict": 5,
         "temperature": 0,
-        # How long to wait for Ollama before giving up and falling back to
-        # "unknown" - only affects commands the regex tier can't classify.
-        # Lower = faster failure when Ollama is slow/unreachable, at the
-        # risk of giving up on a legitimately-slow-but-correct response.
-        "timeout_sec": 1.5,
+        # Warm-inference timeout for tier 1. Measured live on a 16GB
+        # CPU-only machine: ~0.6s steady-state, ~1.7s first-warm-call -
+        # the old 1.5s value randomly failed borderline calls. Cold model
+        # loads are handled separately (see _COLD_LOAD_TIMEOUT_SEC).
+        "timeout_sec": 10.0,
+        "tier1_keep_alive": "30m",
+        # --- Tier 2: the workhorse (drafting, summarizing, tool calling) ---
+        # Qwen2.5 chosen for reliable function-calling at 7B (the agent
+        # loop depends on it), Apache-2.0 license, and multilingual support.
+        "tier2_model": "qwen2.5:7b",
+        "tier2_keep_alive": "10m",
+        "tier2_timeout_sec": 60.0,
+        # --- Tier 3: deep work (long documents, debates, planning) ---
+        # ~9GB resident at Q4; never kept loaded (keep_alive=0) and
+        # auto-disabled below tier3_min_ram_gb total RAM. 15.0, not 16.0:
+        # nominal-16GB machines report ~15.7GB usable, so a 16.0 gate
+        # would wrongly exclude exactly the machines it's meant for.
+        "tier3_model": "qwen2.5:14b",
+        "tier3_timeout_sec": 180.0,
+        "tier3_min_ram_gb": 15.0,
+        # Launch `ollama serve` automatically at MIMIR startup when Ollama
+        # is installed but not running.
+        "autostart_ollama": True,
     },
     "confirmation": {
         # Spoken yes/no confirmation before uncertain or destructive actions.

@@ -24,16 +24,20 @@ def _tone(freq: float, duration: float, sample_rate: int = _SAMPLE_RATE) -> np.n
     fade = np.ones(n)
     fade[:fade_len] = np.linspace(0, 1, fade_len)
     fade[-fade_len:] = np.linspace(1, 0, fade_len)
-    return (wave * fade * 0.2).astype(np.float32)  # 0.2 headroom, avoid clipping
+    return (wave * fade * 0.45).astype(np.float32)  # loud enough to notice through earbuds, no clipping
 
 
 def play_listening_cue() -> None:
     """A quick rising two-tone chime, played instead of speaking the word
     "Listening" - signals the user can start talking without the ~500ms+
-    delay of synthesizing and playing a spoken word first."""
+    delay of synthesizing and playing a spoken word first.
+
+    Amplitude/duration tuned up from the original 0.2/130ms after live
+    testing: through earbuds the quieter version was easy to miss
+    entirely, defeating the point of a cue."""
     if not config.audio.listening_cue_enabled:
         return
-    tone = np.concatenate([_tone(880, 0.06), _tone(1175, 0.07)])
+    tone = np.concatenate([_tone(880, 0.09), _tone(1175, 0.11)])
     sd.play(tone, samplerate=_SAMPLE_RATE)
     sd.wait()
 

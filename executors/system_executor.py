@@ -30,10 +30,22 @@ _CAPABILITIES = (
     "disk space, type text for you, and shut myself down when you ask."
 )
 
+# "Can you hear me?" arrives here as just "hear me" - normalize_command
+# strips "can you" as a filler prefix before classification. Observed live:
+# this was the first thing the user said in a session, twice, and got
+# "I didn't understand that command" both times.
+_HEAR_ME_RE = re.compile(
+    r"\bhear me\b|\bare you (there|listening|awake|working)\b|^(hello|hi|hey)$",
+    re.IGNORECASE,
+)
+
 
 def execute(command_text: str, state: AppState) -> ExecutorResult:
-    """Handle help/capability queries and self-shutdown requests."""
+    """Handle help/capability queries, presence checks, and self-shutdown."""
     text = normalize_command(command_text)
+
+    if _HEAR_ME_RE.search(text):
+        return ExecutorResult(success=True, speak="Yes, I can hear you loud and clear.")
 
     if _QUIT_RE.search(text):
         # A mishearing here kills the assistant, so always confirm first.
