@@ -1,8 +1,7 @@
-# MIMIR
-hands free device control and integrated AI into the pc to control apps, open windows through  voice commands
-
-## Setup
-
-1. Copy `config.example.yaml` to `config.yaml` and edit it for your machine.
-2. Follow `models/README.md` to set up the Whisper/Piper/openWakeWord models.
-3. Run `launcher.bat` (or `python main.py`).
+MIMIR — Machine Intelligence for Memory, Insight, and Reasoning
+A fully offline voice control layer for Windows, built to replace the keyboard and mouse as the primary way to operate a PC.
+The problem. Graphical interfaces were designed for human eyes. That made computers accessible to billions of people — and simultaneously made them opaque to machines. Existing voice assistants either send your screen to the cloud, or rely on brittle screenshot-based computer vision that's slow, expensive, and unreliable.
+The approach. MIMIR reads the Windows UI Automation accessibility tree — the same structured data screen readers have used since 1997 — to understand what's on screen. Every button, field, and menu is already labelled, typed, and machine-readable. No screenshots. No vision models. Just structured text, parsed in milliseconds.
+On top of that sits a three-tier matching system: exact name matching (~1ms), fuzzy matching (~5ms), and local LLM semantic matching (~800ms) for genuinely ambiguous commands. Most commands never reach the LLM — "click Search" resolves instantly, while "find where I type my query and enter Python tutorials" escalates to reasoning.
+What it does. App launching, file navigation, window management, Wi-Fi and Bluetooth, printer setup, volume and brightness, media control, dictation, and in-app UI interaction — all by voice. Custom wake word trained on your voice. Speaker recognition rejects background speech. Runs at ~150MB idle.
+Built with: Python · faster-whisper · Piper TTS · openWakeWord · pywinauto · Playwright · Ollama (Phi-3) · ChromaDB
