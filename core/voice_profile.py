@@ -20,8 +20,9 @@ logger = logging.getLogger("mimir.voice_profile")
 
 _PROFILE_PATH = "models/voice_profile/reference.npy"
 
-# Shared between enroll_voice.py (CLI) and ui/voice_training_window.py (the
-# Settings-window wizard) so both entry points ask for the same thing.
+# Shared between enroll_voice.py (CLI) and step 4 of
+# ui/audio_calibration_window.py (the Settings-window wizard) so both
+# entry points ask for the same thing.
 #
 # Each entry is (phrase, delivery guidance). Deliberately more than just
 # "read this sentence": varied phonetic content (a pangram, numbers,

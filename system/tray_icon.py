@@ -49,12 +49,14 @@ class TrayIcon:
         on_open_settings: Callable[[], None],
         on_listen_now: Callable[[], None],
         on_quit: Callable[[], None],
+        on_toggle_transcript_bar: Callable[[], None] | None = None,
     ) -> None:
         self._state = state
         self._on_open_transcript = on_open_transcript
         self._on_open_settings = on_open_settings
         self._on_listen_now = on_listen_now
         self._on_quit = on_quit
+        self._on_toggle_transcript_bar = on_toggle_transcript_bar
         self._icon = pystray.Icon(
             "MIMIR",
             icon=_make_icon_image(_COLORS["idle"]),
@@ -65,7 +67,7 @@ class TrayIcon:
         self._stop_event = threading.Event()
 
     def _build_menu(self) -> pystray.Menu:
-        return pystray.Menu(
+        items = [
             pystray.MenuItem(
                 "Open Transcript", lambda: self._on_open_transcript(), default=True
             ),
@@ -74,10 +76,22 @@ class TrayIcon:
             # "hey mimir" would, without needing the wake word at all.
             pystray.MenuItem("Listen Now", lambda: self._on_listen_now()),
             pystray.MenuItem("Settings", lambda: self._on_open_settings()),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(self._pause_label, self._toggle_pause),
-            pystray.MenuItem("Quit MIMIR", lambda: self._on_quit()),
+        ]
+        if self._on_toggle_transcript_bar is not None:
+            items.append(pystray.MenuItem(self._transcript_bar_label, lambda: self._on_toggle_transcript_bar()))
+        items.extend(
+            [
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(self._pause_label, self._toggle_pause),
+                pystray.MenuItem("Quit MIMIR", lambda: self._on_quit()),
+            ]
         )
+        return pystray.Menu(*items)
+
+    def _transcript_bar_label(self, _item: pystray.MenuItem) -> str:
+        from ui.transcript_bar import is_showing
+
+        return "Hide Live Transcript" if is_showing() else "Show Live Transcript"
 
     def _pause_label(self, _item: pystray.MenuItem) -> str:
         return "Resume" if self._state.is_paused() else "Pause"

@@ -3,14 +3,15 @@ personalized with real recordings of your own voice.
 
 NOT part of the running app - never imported at runtime by core/wake_word.py
 (which only ever uses inference_framework="onnx", a torch-free path).
-Driven from the Settings window (ui/wake_word_training_window.py), which
-collects your real "hey mimir" recordings and calls run_full_pipeline()
-below on a background thread. Also runnable standalone:
+Driven from step 3 of the audio calibration wizard in the Settings window
+(ui/audio_calibration_window.py), which collects your real "hey mimir"
+recordings and calls run_full_pipeline() below on a background thread.
+Also runnable standalone:
 
     python -m training.train_wake_word
 
 (standalone mode skips the real-recording step and trains on synthetic
-positives only - see ui/wake_word_training_window.py for the personalized,
+positives only - see ui/audio_calibration_window.py for the personalized,
 real-voice-recording path, which is the one actually worth using).
 
 Produces models/wake_word/hey_mimir.onnx. config.yaml's wake_word.phrase/

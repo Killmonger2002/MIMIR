@@ -14,7 +14,7 @@ import re
 import subprocess
 import threading
 
-from thefuzz import process
+from thefuzz import fuzz, process
 
 from core.text_utils import normalize_command
 from executors.base import ExecutorResult
@@ -62,6 +62,13 @@ _ALIASES = {
     "outlook": "outlook",
     "microsoft edge": "msedge",
     "edge": "msedge",
+    # VS Code's own executable is literally "Code.exe", which doesn't
+    # fuzzy-match "vs code" at all (tested live: scores ~40, loses to
+    # unrelated index entries) - the common spoken abbreviation needs an
+    # explicit alias, not fuzzy matching, to resolve reliably.
+    "vs code": "visual studio code",
+    "vscode": "visual studio code",
+    "visual studio code": "visual studio code",
 }
 
 # Windows protocol/URI launchers for built-in apps that aren't plain .exe/.lnk
@@ -83,8 +90,64 @@ _MATCH_THRESHOLD = 70
 # executable - confirm with the user first rather than opening a random
 # similarly-named program.
 _CONFIDENT_SCORE = 85
+# Threshold for the alias-phrase fuzzy stage (see _resolve_app) - higher
+# than _MATCH_THRESHOLD because a shared "microsoft " prefix alone
+# inflates the ratio score even for a near-nonsense suffix (measured
+# live: "microsoft xn" scores 81 against "microsoft excel" - a real but
+# garbled query - vs. 90 for "microsoft excent" - an actual near-miss
+# typo of "excel"). 85 lets the genuine near-miss through while still
+# sending the more garbled query to the full-index stage instead of a
+# false-confident alias resolution.
+_ALIAS_MATCH_THRESHOLD = 85
+# A fuzzy-matched app name shorter than this is almost never a real
+# answer to a longer spoken query - it's index noise (2-3 letter
+# executables like "ex"/"od" that happen to be short substrings of
+# almost anything). Guards the full-index stage now that a length-aware
+# scorer (see _resolve_app) makes tiny fragments rare but not impossible.
+_MIN_MATCH_NAME_LEN = 3
 
 _TRIGGER_RE = re.compile(r"^(?:open|launch|start|run)\s+(.+)$", re.IGNORECASE)
+
+
+def _resolve_app(app_name: str, index: dict[str, str]) -> tuple[str, int] | None:
+    """Resolve a spoken app name to (index_key, score), or None.
+
+    Two stages, both using plain length-normalized fuzz.ratio rather than
+    thefuzz's default WRatio - WRatio's aggressive partial-match mode was
+    observed live scoring tiny unrelated executable fragments ("ex", "od")
+    around 90 against completely different queries ("microsoft excent",
+    "vs code"), because a short candidate trivially "fits inside" almost
+    any longer query under partial matching. Plain ratio penalizes that
+    length mismatch instead, and empirically kept every common app's
+    exact-name match at 100 while sinking junk fragments below 70.
+
+    1. Fuzzy match against the curated _ALIASES phrases - a small,
+       human-vetted pool, so a typo/mishearing of a common app name
+       ("microsoft excent") resolves correctly instead of competing
+       against ~2000 index entries dominated by non-app internals
+       (build-tool helpers, uninstallers, etc.) that a raw index walk of
+       Program Files inevitably contains.
+    2. Fuzzy match against the full index, trying several candidates (not
+       just the single best score) since a nonsense top match shouldn't
+       block trying the next reasonable one - this is exactly what broke
+       "vs code" and "microsoft excent" before: the top (bad) candidate
+       failed a sanity check and the code gave up instead of trying the
+       next candidate down.
+    """
+    alias_match = process.extractOne(app_name, list(_ALIASES.keys()), scorer=fuzz.ratio)
+    if alias_match and alias_match[1] >= _ALIAS_MATCH_THRESHOLD:
+        search_name = _ALIASES[alias_match[0]]
+        if search_name in index:
+            return search_name, 100
+
+    candidates = process.extract(app_name, index.keys(), scorer=fuzz.ratio, limit=5)
+    for name, score in candidates:
+        if score < _MATCH_THRESHOLD:
+            break  # extract() is sorted descending - nothing further clears the bar either
+        if len(name) < _MIN_MATCH_NAME_LEN:
+            continue
+        return name, score
+    return None
 
 
 def _build_index() -> dict[str, str]:
@@ -199,30 +262,22 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
         if not index:
             return ExecutorResult(success=False, speak="I couldn't find any installed apps to search.")
 
-        search_name = _ALIASES.get(app_name.lower(), app_name.lower())
-
-        match = process.extractOne(search_name, index.keys())
-        if match is None or match[1] <= _MATCH_THRESHOLD:
+        resolved = _resolve_app(app_name.lower(), index)
+        if resolved is None:
             return ExecutorResult(success=False, speak=f"I couldn't find an app called {app_name}")
 
-        matched_name, score = match[0], match[1]
-
-        # Reject matches that don't even share a first letter - fuzzy scorers
-        # can give short, unrelated names (e.g. "pr", "mpnotify") a high
-        # score against a longer query via partial-string matching.
-        if matched_name[:1] != search_name[:1]:
-            return ExecutorResult(success=False, speak=f"I couldn't find an app called {app_name}")
+        matched_name, score = resolved
         path = index[matched_name]
         logger.debug("Matched app %r -> %r (score=%d)", app_name, path, score)
 
         def _launch() -> ExecutorResult:
             subprocess.Popen(path, shell=True)
             # Announce what actually MATCHED, not the raw transcript - a
-            # mishearing like "Open Microsoft XN" that fuzzy-resolves to
-            # the Microsoft Excel shortcut should say "Opening microsoft
-            # excel", both because it's the truth about what's happening
-            # and because it's the user's only feedback that the
-            # mishearing was recovered rather than parroted back.
+            # mishearing like "Open Microsoft Excent" that fuzzy-resolves
+            # to the Excel alias should say "Opening excel", both because
+            # it's the truth about what's happening and because it's the
+            # user's only feedback that the mishearing was recovered
+            # rather than parroted back.
             return ExecutorResult(success=True, speak=f"Opening {matched_name}")
 
         if score < _CONFIDENT_SCORE:

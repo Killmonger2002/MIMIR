@@ -18,6 +18,7 @@ import re
 
 from core.text_utils import normalize_command, strip_filler_prefixes
 from executors import system_executor as _system_executor
+from executors import ui_executor as _ui_executor
 
 logger = logging.getLogger("mimir.intent_router")
 
@@ -127,6 +128,39 @@ _PATTERNS: list[tuple[str, list[str]]] = [
             r"\b(cpu|processor)\b.*\busage\b",
             r"\bhow much (battery|ram|memory|disk|storage|space)\b",
             r"\b(battery|cpu usage|ram usage|disk space)\b",
+        ],
+    ),
+    (
+        "ui_executor",
+        [
+            # Semantic on-screen control (Windows Voice Access parity).
+            # The type pattern REQUIRES an "in/into/on <target>" tail so it
+            # outscores typing_executor's bare "^type" for "type X in the
+            # search box", while "type hello world" (no target) still goes
+            # to typing_executor.
+            r"^(click|press|tap|choose)\s+.+",
+            r"^(type|write|enter|input|fill)\s+.+\b(in|into|on)\b\s+.+",
+            r"^(check|uncheck|tick|untick)\s+.+",
+            r"^select\s+.+\bfrom\b\s+.+",
+            r"\b(click|press|tap)\b.*\b(button|link|icon|checkbox|check box|menu|tab|field|box)\b",
+            # Number overlay ("show numbers" -> "click 5"): the signature
+            # Voice Access feature. Bare numbers/number-words only act when
+            # the overlay is up (ui_executor checks), so routing them here
+            # is safe - no other executor uses standalone numbers.
+            #
+            # Referenced (not copy-pasted) from ui_executor's own compiled
+            # regexes, same convention as _system_executor._QUIT_RE below -
+            # a hand-duplicated copy here once drifted out of sync with
+            # ui_executor.py's actual patterns and silently misrouted
+            # "show me the clickable buttons on the screen" to
+            # window_executor (observed live, 2026-07-16).
+            _ui_executor._SHOW_NUMBERS_RE.pattern,
+            _ui_executor._HIDE_NUMBERS_RE.pattern,
+            _ui_executor._UI_HELP_RE.pattern,
+            r"^(number\s+)?\d{1,3}$",
+            r"^(number\s+)?(zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+            r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
+            r"nineteen|twenty|thirty|forty|fifty)(\s+(one|two|three|four|five|six|seven|eight|nine))?$",
         ],
     ),
     (
@@ -427,6 +461,38 @@ if __name__ == "__main__":
         ("switch to the basic model", "model_executor"),
         ("get smarter", "model_executor"),
         ("which model are you using", "model_executor"),
+        # Semantic UI control (ui_executor) vs. its neighbours:
+        ("click search", "ui_executor"),
+        ("click the sign in button", "ui_executor"),
+        ("press ok", "ui_executor"),
+        ("type hello in the search box", "ui_executor"),  # named target -> ui
+        ("type my email in the username field", "ui_executor"),
+        ("check remember me", "ui_executor"),
+        ("select economy from the class dropdown", "ui_executor"),
+        ("type hello world", "typing_executor"),  # no target -> typing (must NOT regress)
+        ("open spotify", "app_executor"),  # open verb -> app, never ui
+        ("close this window", "window_executor"),  # window verb -> window, never ui
+        # Number overlay:
+        ("show numbers", "ui_executor"),
+        ("hide numbers", "ui_executor"),
+        ("5", "ui_executor"),
+        ("number 7", "ui_executor"),
+        ("twenty three", "ui_executor"),
+        ("click 5", "ui_executor"),
+        # Live-testing failures observed 2026-07-16 - see ui_executor's
+        # _clean()/_SHOW_NUMBERS_RE docstrings for the root-cause fixes:
+        ("show numbers.", "ui_executor"),  # trailing period broke the anchor
+        ("Shownumbers", "ui_executor"),  # STT word-merge
+        ("Show me all the clickable buttons on the screen.", "ui_executor"),
+        ("show me the clickable buttons on the screen", "ui_executor"),
+        ("what can i click", "ui_executor"),
+        # 2026-07-17 live-transcript regressions: "click on N" fell through
+        # the number parser entirely (see ui_executor._parse_number), and
+        # these three phrasings/mishearings weren't recognized at all.
+        ("click on 9", "ui_executor"),
+        ("put labels on the screen", "ui_executor"),
+        ("height numbers", "ui_executor"),  # STT mishearing of "hide numbers"
+        ("what on-screen commands can you perform", "ui_executor"),
     ]
 
     mismatches = 0

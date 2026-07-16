@@ -19,15 +19,23 @@ on first run. The cache lives under `%USERPROFILE%\.cache\huggingface`.
 ## 2. Piper (text-to-speech)
 
 Download a Piper voice (`.onnx` model + matching `.onnx.json` config) from
-the Piper voices repository and place both files somewhere on disk, e.g.:
+the Piper voices repository (https://huggingface.co/rhasspy/piper-voices)
+and place both files under `models/piper/`. MIMIR defaults to
+`en_US-lessac-high` - one of only three English voices with a "high"
+quality tier (the others are `en_US-libritts-high`, a multi-speaker model
+needing a speaker ID, and `en_GB-cori-high`, British):
 
 ```
-models/piper/voice.onnx
-models/piper/voice.onnx.json
+curl -L -o models/piper/en_US-lessac-high.onnx \
+  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx
+curl -L -o models/piper/en_US-lessac-high.onnx.json \
+  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx.json
 ```
 
 Update `tts.voice_model_path` and `tts.voice_config_path` in `config.yaml`
-to point at these files.
+if you use a different voice or place the files elsewhere. Note: not every
+speaker has a `high` tier - check the repo before assuming one exists
+(e.g. the previously-used `en_US-amy` only goes up to `medium`).
 
 ## 3. openWakeWord (wake word detection)
 

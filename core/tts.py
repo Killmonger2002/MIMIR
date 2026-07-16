@@ -13,6 +13,7 @@ import sounddevice as sd
 
 from config import config
 from core.audio_device import get_input_device
+from core.tts_normalize import normalize_for_speech
 from state import AppState
 
 logger = logging.getLogger("mimir.tts")
@@ -170,7 +171,7 @@ def speak(text: str, state: AppState, allow_interrupt: bool = True) -> bool:
     Returns True if the user interrupted mid-speech, False if playback
     ran to completion (or there was nothing to say).
     """
-    text = text.strip()
+    text = normalize_for_speech(text.strip())
     if not text:
         return False
 

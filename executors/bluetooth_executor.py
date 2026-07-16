@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 
-from thefuzz import process
+from thefuzz import fuzz, process
 
 from executors.base import ExecutorResult, run_hidden
 from state import AppState
@@ -83,7 +83,7 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
             if not devices:
                 return ExecutorResult(success=False, speak="I can't access Bluetooth devices right now")
 
-            best = process.extractOne(target, devices)
+            best = process.extractOne(target, devices, scorer=fuzz.ratio)
             if best is None or best[1] <= _MATCH_THRESHOLD:
                 return ExecutorResult(success=False, speak=f"I couldn't find a paired device called {target}")
 

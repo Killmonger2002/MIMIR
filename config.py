@@ -177,6 +177,12 @@ DEFAULTS: dict[str, Any] = {
     "printer": {
         "last_opened_file_placeholder": "",
     },
+    "ui": {
+        # Small always-on-top live-transcript bar docked near the top of
+        # the screen. Off by default so it never surprises anyone on
+        # first launch; toggled from the tray menu or Settings.
+        "transcript_bar_enabled": False,
+    },
 }
 
 

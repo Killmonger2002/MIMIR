@@ -73,6 +73,11 @@ logging:
   max_bytes: 5242880
 printer:
   last_opened_file_placeholder: ''
+ui:
+  # Small always-on-top live-transcript bar docked near the top of the
+  # screen, showing the latest exchange as the conversation progresses.
+  # Off by default; toggle from the tray menu or Settings.
+  transcript_bar_enabled: false
 speaker_verification:
   # Filters recorded audio down to segments matching the enrolled voice
   # (run enroll_voice.py once) - keeps MIMIR "locked on" to whoever said
@@ -111,8 +116,8 @@ stt:
   denoise_enabled: true
 tts:
   speed: 1.0
-  voice_config_path: models/piper/en_US-amy-medium.onnx.json
-  voice_model_path: models/piper/en_US-amy-medium.onnx
+  voice_config_path: models/piper/en_US-lessac-high.onnx.json
+  voice_model_path: models/piper/en_US-lessac-high.onnx
   # Piper/VITS prosody knobs, left at the voice's own baked-in defaults
   # (null) unless overridden. noise_scale adds variation to the voice
   # itself (higher = more expressive, too high = unstable/garbled);

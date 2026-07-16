@@ -22,8 +22,11 @@ logger = logging.getLogger("mimir.vocabulary")
 # much larger pool of installed app names.
 _MAX_FOLDER_NAMES = 40
 _MAX_APP_NAMES = 20
+_MAX_UI_NAMES = 25  # on-screen element names get priority (placed first) but stay bounded
 
-_cached_prompt: str | None = None
+# Only the folder/app portion is cached (it rarely changes); the on-screen
+# UI-element portion is recomputed each call since it changes per screen.
+_static_prompt: str | None = None
 
 
 def _collect_folder_names() -> list[str]:
@@ -57,16 +60,10 @@ def _collect_app_names() -> list[str]:
     return list(app_executor._APP_INDEX.keys())[:_MAX_APP_NAMES]
 
 
-def build_vocabulary_prompt() -> str:
-    """Return a comma-separated list of real names on this machine, used
-    as Whisper's initial_prompt. Cached for the process lifetime - the
-    folder/app sets rarely change mid-session, and rebuilding on every
-    utterance would add a directory-walk's worth of latency to every
-    single command. Call reset_cache() to force a rebuild (done
-    automatically once app_executor's index finishes building)."""
-    global _cached_prompt
-    if _cached_prompt is not None:
-        return _cached_prompt
+def _build_static_prompt() -> str:
+    global _static_prompt
+    if _static_prompt is not None:
+        return _static_prompt
 
     names: list[str] = []
     try:
@@ -78,24 +75,48 @@ def build_vocabulary_prompt() -> str:
     except Exception:
         logger.debug("Failed to collect app names for vocabulary hint", exc_info=True)
 
+    _static_prompt = ", ".join(_dedupe(names))
+    logger.info("Built static vocabulary hint with %d names", len(_static_prompt.split(", ")) if _static_prompt else 0)
+    return _static_prompt
+
+
+def _dedupe(names: list[str]) -> list[str]:
     seen: set[str] = set()
-    deduped: list[str] = []
+    out: list[str] = []
     for name in names:
-        key = name.lower()
-        if key in seen:
+        key = name.lower().strip()
+        if not key or key in seen:
             continue
         seen.add(key)
-        deduped.append(name)
+        out.append(name)
+    return out
 
-    _cached_prompt = ", ".join(deduped)
-    logger.info("Built vocabulary hint with %d names", len(deduped))
-    return _cached_prompt
+
+def build_vocabulary_prompt() -> str:
+    """Whisper initial_prompt biasing transcription toward names that
+    actually exist here: on-screen UI element names FIRST (the most
+    immediately relevant context during UI control - "click <this app's
+    weird button>"), then the cached folder/app names.
+
+    The folder/app part is cached; the on-screen part is recomputed each
+    call (cheap - it's just reading the last scan's cached names) since it
+    changes per screen."""
+    from core.ui_scanner import recent_element_names
+
+    ui_names = recent_element_names()[:_MAX_UI_NAMES]
+    static = _build_static_prompt()
+
+    if not ui_names:
+        return static
+    ui_part = ", ".join(_dedupe(ui_names))
+    return f"{ui_part}, {static}" if static else ui_part
 
 
 def reset_cache() -> None:
-    """Force build_vocabulary_prompt() to rebuild on its next call."""
-    global _cached_prompt
-    _cached_prompt = None
+    """Force the static (folder/app) portion to rebuild on its next call.
+    The on-screen UI portion is never cached, so it's always current."""
+    global _static_prompt
+    _static_prompt = None
 
 
 if __name__ == "__main__":

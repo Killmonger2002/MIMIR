@@ -21,9 +21,10 @@ Re-run this script any time to re-enroll (e.g. if verification feels too
 strict or too loose - see also speaker_verification.similarity_threshold
 in config.yaml).
 
-This is also available as a UI wizard in MIMIR's Settings window (see
-ui/voice_training_window.py) if you'd rather not use the terminal - both
-call the exact same core.voice_profile.enroll_from_samples() underneath.
+This is also available as step 4 of the audio calibration wizard in
+MIMIR's Settings window (see ui/audio_calibration_window.py) if you'd
+rather not use the terminal - both call the exact same
+core.voice_profile.enroll_from_samples() underneath.
 """
 
 from __future__ import annotations

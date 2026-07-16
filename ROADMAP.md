@@ -99,10 +99,22 @@ media control happen by voice.
 
 - [ ] One installer (PyInstaller + Inno Setup): Python runtime, Piper
       voice, wake-word models, **and Ollama bundled silently**
-- [ ] First-run wizard: mic check → voice enrollment → wake-word
-      training → guided model pull sized to the machine's RAM → three
-      practice commands
-- [ ] Settings UI covers 100% of config; YAML never required
+- [x] Calibration wizard (2026-07-16, ui/audio_calibration_window.py):
+      mic level + noise floor metering → VAD threshold capture → wake-word
+      training → voice enrollment, one flow, dark-themed to match the rest
+      of the UI (ui/theme.py). Launched from Settings, not yet auto-run on
+      first launch. Still missing to fully close this roadmap item: an
+      actual first-run trigger, guided model pull sized to RAM, and three
+      practice commands at the end.
+- [x] Settings UI: real input-device dropdown (core/audio_device.py
+      list_input_devices(), switches live via reset_cache() - no more
+      typing a device name substring by hand) and model selection (LLM
+      tier + STT model size, both apply immediately) (2026-07-16).
+      Non-config-editor rows (hotkeys, TTS speed, etc.) still exist -
+      "100% of config, YAML never required" isn't fully closed yet.
+- [x] Live transcript bar (2026-07-16, ui/transcript_bar.py): small
+      always-on-top HUD showing the current mode and latest exchange,
+      toggled from the tray or Settings, off by default, choice persists.
 - [ ] Start on login, crash watchdog, update checker
 - [ ] Privacy proof: tray network indicator showing zero outbound
       traffic during normal use (searches visibly excepted)
@@ -114,11 +126,45 @@ in under 10 minutes, unassisted.
 
 ## Phase 4 — Screen interaction (mouse replacement)
 
-- [ ] UIA "click [button name]" on the foreground window
-- [ ] UIA dialog/screen reading aloud
-- [ ] Numbered-grid overlay fallback for apps with poor accessibility
-      trees
-- [ ] Form filling by field name
+- [x] UIA "click [button name]" on the foreground window
+      (core/ui_scanner + element_matcher + action_executor +
+      executors/ui_executor; verified live clicking/typing on real
+      Windows dialogs, 2026-07-14). Windows Voice Access parity for the
+      core "click <name>" / "type <text> in <field>" case, driven by
+      MIMIR's own STT/routing and the tiered LLM for hard matches.
+- [x] Form filling by field name ("type X in the username field",
+      "check remember me", "select X from the dropdown")
+- [x] Numbered overlay ("show numbers" → "click 5") — the signature
+      Voice Access feature (core/ui_overlay.py: transparent, topmost,
+      click-through; verified end-to-end, 2026-07-15). Doubles as an
+      audio-understanding win: recognizing a digit beats recognizing an
+      arbitrary label. Number-word parsing included ("five", "twenty
+      three"). Whole-screen + multi-monitor scan (2026-07-16): originally
+      scoped to only the foreground window, so it missed desktop icons,
+      other open windows, and anything on a second monitor - "click 6"
+      failing was a direct downstream symptom (the element just didn't
+      exist in a 4-element single-window scan). core/ui_scanner.py now
+      walks every visible top-level window (confirmed live to already
+      span all monitors via UIA) with a foreground-priority + per-window
+      element budget so one huge window can't starve everything else, and
+      core/ui_overlay.py now sizes itself to the full virtual desktop
+      (GetSystemMetrics SM_*VIRTUALSCREEN) instead of the primary monitor
+      only. Known trade-off, not fixed: latency scales with what's open
+      (measured 1-3s live, dominated by the foreground window's own UIA
+      tree size) and mixed-DPI multi-monitor alignment isn't solved (needs
+      process-wide per-monitor DPI awareness, a bigger cross-cutting
+      change - see core/ui_overlay.py's docstring).
+- [x] Context-biased STT for UI control: on-screen element names lead
+      Whisper's initial_prompt after a scan (core/vocabulary.py), so the
+      NEXT command's labels transcribe more reliably.
+- [ ] UIA dialog/screen reading aloud ("what's on screen", "read this
+      dialog") — scanner already extracts the text; needs a read-out
+      executor path
+- [ ] Grid overlay (pixel regions) for elements with no UIA node at all
+      (rect data already captured on each UIElement; the numbered overlay
+      covers the has-a-node case)
+- [ ] Playwright browser path as an optional enhancement (UIA already
+      covers browsers; only add if a site's UIA tree proves inadequate)
 - [ ] Only then: local VLM for what UIA can't see
 
 **Exit:** complete an unfamiliar installer dialog flow entirely by voice.

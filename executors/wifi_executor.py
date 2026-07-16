@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 
-from thefuzz import process
+from thefuzz import fuzz, process
 
 from executors.base import ExecutorResult, run_hidden
 from state import AppState
@@ -20,6 +20,14 @@ logger = logging.getLogger("mimir.wifi_executor")
 
 _CONNECT_RE = re.compile(r"connect to\s+(.+)", re.IGNORECASE)
 _MATCH_THRESHOLD = 60
+# Below this, connect only after a spoken confirmation - a garbled network
+# name shouldn't silently connect to a different saved profile than the
+# one meant (the same "don't act confidently on a weak match" pattern
+# applied to app_executor/window_executor after a live matching bug there;
+# also switched to fuzz.ratio, the length-aware scorer - default WRatio's
+# aggressive partial-match mode was observed there inflating short/unrelated
+# candidates well above threshold).
+_CONFIDENT_SCORE = 85
 
 
 def _list_profiles() -> list[str]:
@@ -88,7 +96,7 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
                     needs_followup=True,
                 )
 
-            best = process.extractOne(target, profiles)
+            best = process.extractOne(target, profiles, scorer=fuzz.ratio)
             if best is None or best[1] <= _MATCH_THRESHOLD:
                 return ExecutorResult(
                     success=False,
@@ -98,7 +106,15 @@ def execute(command_text: str, state: AppState) -> ExecutorResult:
 
             # TODO(phase2): if no saved profile matches, accept a spoken password
             # and create a new Wi-Fi profile via netsh add profile.
-            return _connect(best[0])
+            profile_name, score = best
+            if score < _CONFIDENT_SCORE:
+                return ExecutorResult(
+                    success=True,
+                    speak="",
+                    confirm=f"Did you mean {profile_name}?",
+                    on_confirm=lambda: _connect(profile_name),
+                )
+            return _connect(profile_name)
 
         return ExecutorResult(success=False, speak="I'm not sure what Wi-Fi action you want.")
     except Exception:

@@ -22,3 +22,7 @@ noisereduce
 # here: resemblyzer's voice encoder loads every time MIMIR starts.
 resemblyzer
 torch
+# Semantic UI control (core/ui_scanner.py + ui_executor) - reads the
+# foreground window's UI Automation tree so "click Search" / "type X in
+# the address bar" work by name, the way Windows Voice Access does.
+pywinauto

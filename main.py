@@ -27,6 +27,8 @@ from system.hotkey import HotkeyManager
 from system.lifecycle import LifecycleManager
 from system.tray_icon import TrayIcon
 from ui.settings_window import open_settings_window
+from ui.transcript_bar import is_showing as _transcript_bar_showing
+from ui.transcript_bar import set_enabled as _set_transcript_bar_enabled
 from ui.transcript_window import open_transcript_window
 
 LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", "."), "MIMIR", "logs")
@@ -95,6 +97,10 @@ class Mimir:
             self.state.set_mode("idle")
         finally:
             self._command_cycle_lock.release()
+
+    def _on_toggle_transcript_bar(self) -> None:
+        """Callback fired by the tray's Show/Hide Live Transcript item."""
+        _set_transcript_bar_enabled(self.state, not _transcript_bar_showing())
 
     def _on_listen_now(self) -> None:
         """Callback fired by the tray's "Listen Now" button - a manual
@@ -317,6 +323,9 @@ class Mimir:
         self._prewarm()
         tts.speak("MIMIR at your service", self.state, allow_interrupt=False)
 
+        if config.ui.transcript_bar_enabled:
+            _set_transcript_bar_enabled(self.state, True, persist=False)
+
         self.wake_word_listener.start()
         self.hotkeys.start()
         self.lifecycle.start()
@@ -327,6 +336,7 @@ class Mimir:
             on_open_settings=lambda: open_settings_window(),
             on_listen_now=self._on_listen_now,
             on_quit=self.shutdown,
+            on_toggle_transcript_bar=self._on_toggle_transcript_bar,
         )
         self.tray.run()
 
