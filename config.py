@@ -38,15 +38,22 @@ DEFAULTS: dict[str, Any] = {
         "min_activation_chunks": 3,
     },
     "stt": {
-        "model_size": "tiny.en",
+        # base.en over tiny.en (2026-07-17): benchmarked on this project's
+        # own failing phrases (benchmark scratchpad), base.en was more
+        # accurate at only ~0.3s more latency per command on a CPU-only
+        # machine, while small.en gave no accuracy gain over base.en for
+        # ~3x the latency. tiny.en's real-mic failures ("Excel" -> "XN",
+        # "Word" -> "wide", "Microsoft" -> "microsoptics") drove this.
+        "model_size": "base.en",
         "device": "cpu",
         "compute_type": "int8",
         "silence_threshold": 500,
         # How long a trailing silence has to last before a recording is
         # considered finished. Lower = snappier responses; too low risks
-        # cutting the user off mid-sentence during a natural pause. Raise
-        # this back toward 1.0 if that starts happening in practice.
-        "silence_duration_sec": 0.6,
+        # cutting the user off mid-sentence during a natural pause. Raised
+        # 0.6 -> 0.9 (2026-07-17) after live reports of MIMIR ending the
+        # recording before the user finished a sentence.
+        "silence_duration_sec": 0.9,
         "sample_rate": 16000,
         # Bias Whisper toward real folder/app names on this machine (see
         # core/vocabulary.py) - the fix for the "Dell"/"then",
@@ -72,8 +79,14 @@ DEFAULTS: dict[str, Any] = {
         # enrolled reference to be kept. Lower = more tolerant of mic/
         # background variation but more likely to let other voices
         # through; higher = stricter but may reject your own voice more
-        # often (e.g. when sick, shouting, or on a different mic).
-        "similarity_threshold": 0.75,
+        # often (e.g. when sick, shouting, or on a different mic). Lowered
+        # 0.75 -> 0.55 (2026-07-17): 0.75 was rejecting the enrolled
+        # user's own voice repeatedly on real mic/room audio (13+ dropped
+        # clips in one live session). resemblyzer same-speaker similarity
+        # routinely dips to ~0.6 with real-world variation, so 0.75 was
+        # too strict a bar. Raise it back toward 0.7 if MIMIR starts
+        # responding to other people's voices.
+        "similarity_threshold": 0.55,
         # Partial-utterance windows per second (resemblyzer's own
         # granularity for the sliding-window comparison) - the default
         # matches resemblyzer's own default and shouldn't normally need

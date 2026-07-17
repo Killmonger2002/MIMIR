@@ -32,9 +32,23 @@ def filter_by_speaker(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     windows that pass config.speaker_verification.similarity_threshold.
 
     Returns the audio unchanged if no profile is enrolled yet, or if the
-    clip has nothing usable after resemblyzer's own preprocessing. Returns
-    an empty array if the clip doesn't match the enrolled speaker at all -
-    callers already treat an empty/silent result as "nothing was said".
+    clip has nothing usable after resemblyzer's own preprocessing.
+
+    Fail-OPEN, not fail-closed (changed 2026-07-17): if NO window clears
+    the threshold, the original audio is returned unchanged rather than an
+    empty array. The old fail-closed behavior returned empty, which every
+    caller treats as "nothing was said" - so a single over-strict
+    rejection silently nuked the whole utterance to a dead end. Live logs
+    showed this firing on the ENROLLED user's own voice 13+ times in one
+    session (0.75 is a high bar for resemblyzer cosine similarity once
+    real mic/room/noise variation is in play), and - worst of all -
+    eating "yes" replies to shutdown/confirmation prompts so they parsed
+    as "no, cancelled". The wake word already gated entry to this clip;
+    speaker verification is a secondary "prefer the enrolled voice"
+    filter, so when it can't find a match it should defer, not delete.
+    Partial filtering (keep matching windows, drop the rest) still applies
+    whenever at least one window DOES match, so a genuine mixed
+    user+background clip is still cleaned.
     """
     reference = load_profile()
     if reference is None:
@@ -75,8 +89,12 @@ def filter_by_speaker(audio: np.ndarray, sample_rate: int) -> np.ndarray:
                 keep_mask[start:stop] = True
 
         if n_passed == 0:
-            logger.info("Speaker verification: no segment matched the enrolled voice, dropping clip")
-            return np.array([], dtype=np.float32)
+            logger.info(
+                "Speaker verification: no segment matched the enrolled voice; keeping the clip anyway "
+                "(fail-open). If this fires constantly on your own voice, re-run voice enrollment or "
+                "lower speaker_verification.similarity_threshold."
+            )
+            return audio
 
         if n_passed < len(partial_embeds):
             logger.info(

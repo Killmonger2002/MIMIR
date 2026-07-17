@@ -68,9 +68,16 @@ def confirm_with_reply(question: str, state: AppState) -> tuple[bool | None, str
     tts.speak(question, state)
 
     state.set_mode("listening")
-    audio = stt.record_until_silence(max_wait_sec=config.confirmation.reply_wait_sec)
+    # apply_speaker_filter=False: never let speaker verification drop a
+    # yes/no reply - it was eating "yes" answers and turning them into
+    # "no, cancelled" (see record_until_silence's docstring).
+    audio = stt.record_until_silence(
+        max_wait_sec=config.confirmation.reply_wait_sec, apply_speaker_filter=False
+    )
     state.set_mode("thinking")
     reply = stt.transcribe(audio)
+    if reply:
+        state.add_caption("you", reply)
 
     verdict = parse_reply(reply)
     logger.info("Confirmation %r -> reply %r -> %s", question, reply, verdict)

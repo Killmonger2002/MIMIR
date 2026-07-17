@@ -70,6 +70,28 @@ def reset_cache() -> None:
     _resolved_device = "unresolved"
 
 
+def current_device_choice_label() -> str:
+    """config.audio.input_device_name as a dropdown-ready label - shared
+    by every window that shows a device picker (Settings, the calibration
+    wizard, the transcript bar), so they all render the same choice."""
+    name = config.audio.input_device_name.strip()
+    return name if name else "System default (auto-detect)"
+
+
+def list_device_choices() -> list[str]:
+    """Dropdown-ready device name list: deduplicated, with a leading
+    'System default' option representing an empty input_device_name."""
+    try:
+        names, seen = [], set()
+        for d in list_input_devices():
+            if d["name"] not in seen:
+                names.append(d["name"])
+                seen.add(d["name"])
+    except Exception:
+        names = []
+    return ["System default (auto-detect)"] + names
+
+
 def list_input_devices() -> list[dict]:
     """Return every input-capable device as
     {"name": str, "hostapi": str, "is_default": bool}, WASAPI-preferred

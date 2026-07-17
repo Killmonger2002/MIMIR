@@ -175,6 +175,7 @@ def speak(text: str, state: AppState, allow_interrupt: bool = True) -> bool:
     if not text:
         return False
 
+    state.add_caption("mimir", text)
     state.set_mode("speaking")
     interrupted_event = threading.Event()
     monitor_stop_event = threading.Event()

@@ -49,15 +49,31 @@ def _collect_folder_names() -> list[str]:
 
 
 def _collect_app_names() -> list[str]:
-    """Installed app names, but only if app_executor's index has already
-    been built by an earlier command - never force-build it here, since
-    that would add a directory-walk's worth of latency to every
-    transcription until the first "open X" command happens to trigger it."""
-    from executors import app_executor
+    """Common app names worth biasing Whisper toward - the curated
+    _ALIASES values from app_executor (excel, notepad, winword, ...),
+    NOT a slice of the raw installed-app index.
 
-    if app_executor._APP_INDEX is None:
-        return []
-    return list(app_executor._APP_INDEX.keys())[:_MAX_APP_NAMES]
+    Bug this fixes: app_executor's index is built by a recursive walk of
+    Program Files (~2000 entries on a real machine, confirmed live) and
+    is dominated by internal/build-tool executables, not user-facing
+    apps. list(index.keys())[:20] in raw insertion order fed Whisper's
+    initial_prompt things like "mingw installation manager", "grammarly",
+    "ollama", and five different anaconda/jupyter entries - while "excel"
+    (at index position 54) never made it in at all. A biasing prompt
+    doesn't just fail to help when the right word is missing from it -
+    it actively pulls the decoder toward whatever vocabulary IS present,
+    which is exactly why "open Microsoft Excel" was showing up in real
+    logs as "Ready?", "Open XL", "Boba Nixon", and "Amen, man" instead of
+    a stable, single mishearing. Observed live, 2026-07-17.
+
+    The curated alias list is small, human-picked to be exactly the
+    common apps someone would ask for by voice, and (unlike the index)
+    doesn't require app_executor to have built anything yet - it's
+    available from the very first transcription, not just after the
+    first "open X" command happens to trigger an index build."""
+    from executors.app_executor import _ALIASES
+
+    return _dedupe(list(_ALIASES.values()))[:_MAX_APP_NAMES]
 
 
 def _build_static_prompt() -> str:

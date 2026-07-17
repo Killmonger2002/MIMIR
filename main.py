@@ -27,6 +27,8 @@ from system.hotkey import HotkeyManager
 from system.lifecycle import LifecycleManager
 from system.tray_icon import TrayIcon
 from ui.settings_window import open_settings_window
+from ui.transcript_bar import configure as _configure_transcript_bar
+from ui.transcript_bar import hide_transcript_bar
 from ui.transcript_bar import is_showing as _transcript_bar_showing
 from ui.transcript_bar import set_enabled as _set_transcript_bar_enabled
 from ui.transcript_window import open_transcript_window
@@ -161,6 +163,13 @@ class Mimir:
                 self.state.set_mode("idle")
                 return
 
+            # Caption the instant it's transcribed, not after classify/
+            # execute resolve - a garbled or unrecognized utterance should
+            # still show up live instead of only ever-classified commands
+            # appearing (add_log_entry() below only fires once a full
+            # command cycle completes).
+            self.state.add_caption("you", transcript)
+
             if confidence < config.confirmation.stt_logprob_threshold:
                 logger.info("Low STT confidence (%.2f) for %r, confirming", confidence, transcript)
                 verdict, reply = confirmer.confirm_with_reply(
@@ -265,6 +274,13 @@ class Mimir:
         self.hotkeys.stop()
         self.lifecycle.shutdown()
 
+        # Explicit app-bar/meter-thread teardown, not just relying on
+        # process exit to release them - SHAppBarMessage(ABM_REMOVE) must
+        # actually run or the reserved screen strip can outlive this
+        # process until something else nudges the shell to recheck it.
+        if _transcript_bar_showing():
+            hide_transcript_bar()
+
         if self.tray is not None:
             self.tray.stop()
 
@@ -323,6 +339,7 @@ class Mimir:
         self._prewarm()
         tts.speak("MIMIR at your service", self.state, allow_interrupt=False)
 
+        _configure_transcript_bar(on_listen_now=self._on_listen_now)
         if config.ui.transcript_bar_enabled:
             _set_transcript_bar_enabled(self.state, True, persist=False)
 
@@ -333,7 +350,7 @@ class Mimir:
         self.tray = TrayIcon(
             self.state,
             on_open_transcript=lambda: open_transcript_window(self.state),
-            on_open_settings=lambda: open_settings_window(),
+            on_open_settings=lambda: open_settings_window(self.state),
             on_listen_now=self._on_listen_now,
             on_quit=self.shutdown,
             on_toggle_transcript_bar=self._on_toggle_transcript_bar,

@@ -74,6 +74,33 @@ spoken response and resulting action match expectations.
 ## typing_executor
 - [ ] "type hello world"
 - [ ] "write dear sir"
+- [ ] "dictate hello world" (one-shot - must NOT enter dictation mode)
+
+## dictation_executor (continuous dictation mode - v1, 2026-07-17)
+Focus a text field first (Notepad, a browser textbox, Word), then:
+- [ ] "start dictation" (also: "take dictation", "dictation mode") - MIMIR
+      says "Dictation on..." and the tray icon / transcript bar show
+      "Dictating" (orange)
+- [ ] Speak normally - words appear in the focused field with Whisper's
+      own punctuation and capitalization; no wake word needed between
+      sentences
+- [ ] Consecutive sentences are space-joined (say "Hello there." pause
+      "How are you?" -> "Hello there. How are you?")
+- [ ] "new line" inserts one line break; "new paragraph" inserts two
+- [ ] "scratch that" / "delete that" removes the last dictated chunk
+- [ ] "undo that" / "undo" sends Ctrl+Z (leans on the app's own undo)
+- [ ] "stop dictation" / "end dictation" / "I'm done dictating" ends the
+      session (MIMIR says "Dictation off")
+- [ ] Pause hotkey (Ctrl+Shift+M) OR tray "Stop Dictation" ends it even if
+      the spoken stop phrase isn't recognized (the escape hatch)
+- [ ] Content words that look like commands stay literal: "the Jurassic
+      period", "stop the car" are TYPED, not treated as commands (only a
+      whole-utterance exact match like just "stop dictation" is a command)
+- [ ] Known v1 limitation: pausing mid-sentence can leave an extra
+      capital/period at the boundary (Whisper treats each chunk as a full
+      sentence) - the v2 LLM-cleanup pass is meant to smooth this
+- [ ] Known v1 limitation: types into whatever is focused - if focus is
+      wrong, text goes to the wrong place (position the cursor first)
 
 ## ui_executor (semantic on-screen control)
 Open a real app/dialog first (e.g. a browser, Settings, or a Save dialog),
@@ -156,14 +183,72 @@ foreground one - confirm on a real multi-window, multi-monitor desktop:
 - [ ] Back/Continue navigate correctly and don't crash if you leave a step
       mid-recording
 
-## Live transcript bar
+## Live transcript bar (2026-07-17 rebuild, thinned 2026-07-17)
 - [ ] Tray menu "Show Live Transcript" / "Hide Live Transcript" toggles a
-      small always-on-top bar docked near the top of the screen
-- [ ] The bar's status word changes with MIMIR's mode (Listening/Thinking/
-      Speaking) and the latest exchange replaces the previous one as the
-      conversation progresses
-- [ ] Its "✕" closes it and unchecks the tray toggle; the on/off choice is
-      remembered on the next launch
+      bar docked at the top of the screen
+- [ ] It's thin - about half the height of the taskbar (26px vs the
+      taskbar's 48px), a single row, not the earlier 3-row layout.
+      Confirm nothing is clipped/unreadable at this height on your
+      actual display scaling
+- [ ] Real docking, not just floating: maximize any other window while
+      the bar is showing - it should NOT render into the bar's strip
+      (confirmed programmatically: SPI_GETWORKAREA's top goes from 0 to
+      ~26 while docked, back to 0 when hidden - re-verified after the
+      height change). If a window still overlaps it, app-bar
+      registration silently failed on this machine and it fell back to
+      a plain always-on-top window - check the log for
+      "SHAppBarMessage(ABM_NEW) failed"
+- [ ] Switching focus between other windows never covers the bar (it
+      re-asserts topmost on a timer)
+- [ ] Every spoken/heard line appears live, one at a time, as the
+      conversation happens - the "Yes?" listening prompt, confirmation
+      questions ("Did you mean X?"), your spoken yes/no reply, and any
+      utterance MIMIR failed to understand, not just one entry per
+      finished command. NOTE: at this height only the SINGLE most recent
+      line is shown (replaced by the next one), not a scrollback feed -
+      full history is still in the Transcript window/state.get_captions()
+- [ ] The mode word (Idle/Listening/Thinking/Speaking) updates live
+- [ ] Icon-only toolbar (▶ Listen Now, ⚙ Settings, 🎤 mic pause/resume -
+      turns red when paused, 🎧 device picker menu, plus the level meter)
+      all work with no text labels - hover/click each to confirm they're
+      discoverable enough without labels
+- [ ] Its "✕" closes it and unchecks the tray toggle; the on/off choice
+      persists across restarts
+- [ ] Quitting MIMIR (Ctrl+Shift+Q or "quit mimir") releases the docked
+      space - check SPI_GETWORKAREA is back to normal after MIMIR exits,
+      not just that the bar disappears
+
+## Vocabulary hint / STT accuracy (2026-07-17 fix)
+- [ ] Say "open Microsoft Excel" a few times - should no longer mishear
+      as "XN"/"XL"/"Boba Nixon"/"Ready?" (real examples from
+      %LOCALAPPDATA%\MIMIR\logs\mimir.log before this fix). Root cause
+      was core/vocabulary.py feeding Whisper's initial_prompt an
+      unfiltered slice of the ~2000-entry app index (dominated by
+      Program Files internals, not real app names - "excel" itself
+      never made it into the hint at all); fixed to use app_executor's
+      curated alias list instead. Verified with a controlled synthesized-
+      audio A/B test at multiple noise levels before shipping.
+- [ ] Other common apps (word, powerpoint, outlook, edge, notepad,
+      calculator, explorer, vs code, etc.) should also transcribe more
+      reliably now that they're actually in the vocabulary hint
+
+## Speaker verification / confirmation replies (2026-07-17 fix)
+- [ ] With a voice profile enrolled, say "goodbye" / "shut down mimir",
+      then answer "yes" to "That will shut down MIMIR. Are you sure?" -
+      it must actually shut down, NOT say "Okay, cancelled". (Root cause:
+      speaker verification was dropping the "yes" clip as not-matching-
+      the-profile, so the reply parsed as empty -> no. Confirmation
+      replies now bypass speaker verification entirely.)
+- [ ] General: with a profile enrolled, normal commands should not
+      silently fail more often than without one. If they do, the profile
+      is too strict for your mic/room - the filter now fails OPEN (keeps
+      the clip and warns in the log: "keeping the clip anyway (fail-
+      open)") instead of dropping it, but you may still want to re-enroll
+      or lower speaker_verification.similarity_threshold (0.75 default was
+      observed rejecting the enrolled user's own voice repeatedly)
+- [ ] Check the log for "keeping the clip anyway (fail-open)" frequency -
+      if it's on nearly every command, speaker verification needs
+      re-enrollment or a lower threshold on this machine
 
 ## System checks
 - [ ] Tray icon changes color for idle/listening/thinking/speaking/paused

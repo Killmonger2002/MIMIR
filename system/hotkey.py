@@ -22,6 +22,14 @@ class HotkeyManager:
         self._on_quit = on_quit
 
     def _toggle_pause(self) -> None:
+        # While dictating, the pause hotkey is the hard-stop escape hatch
+        # (in case the spoken "stop dictation" phrase never gets
+        # recognized) rather than a normal pause toggle - stopping the
+        # dictation loop is what the user means by hitting the key here.
+        if self._state.is_dictating():
+            self._state.request_stop_dictation()
+            logger.info("Dictation stop requested via hotkey")
+            return
         paused = self._state.toggle_pause()
         self._state.set_mode("paused" if paused else "idle")
         logger.info("MIMIR %s via hotkey", "paused" if paused else "resumed")

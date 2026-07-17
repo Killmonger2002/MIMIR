@@ -47,11 +47,29 @@ abandonment threshold is ~90-95%.
 
 - [x] Ollama lifecycle: detect / auto-start / plain-spoken degradation
 - [x] Filler-prefix + presence-check fixes from live-transcript failures
+- [x] Vocabulary-hint quality fix (2026-07-17, core/vocabulary.py): the
+      app-name portion of Whisper's initial_prompt was an unfiltered
+      slice of app_executor's ~2000-entry index (dominated by Program
+      Files internals - "excel" itself sat at position 54 and never made
+      the cut), which was actively biasing transcription AWAY from real
+      app names, not toward them - real logs showed "open Microsoft
+      Excel" decoded as "Ready?", "Open XL", "Boba Nixon". Switched to
+      the curated app_executor._ALIASES list. Verified with a controlled
+      synthesized-audio A/B test (old hint vs. new hint vs. no hint) at
+      three noise levels before shipping - see TESTING.md.
 - [ ] Status queries for everything settable ("what's the volume /
       brightness / wifi status")
 - [ ] Helpful rejection: "I heard 'X' — did you mean brightness?" (use
       the router's runner-up signal)
-- [ ] Run benchmark_stt.py; move to base.en if latency allows
+- [x] Moved default STT model tiny.en -> base.en (2026-07-17). Benchmarked
+      on this project's own live-failure phrases at multiple noise levels:
+      base.en more accurate for only ~0.3s more latency per command on a
+      CPU-only machine; small.en gave no accuracy gain over base.en for
+      ~3x the latency (3.3s median - too slow). Driven by repeated live
+      real-mic failures on tiny.en ("Excel"->"XN", "Word"->"wide",
+      "Microsoft"->"microsoptics") that the vocabulary-hint fix alone
+      couldn't reach - the acoustic model itself was the floor. Switchable
+      live from Settings; all three sizes now cached locally.
 - [ ] End-to-end latency logging (wake→action) per command
 
 **Exit:** ≥90% success on a scripted 50-command checklist.
@@ -79,8 +97,19 @@ cited, fully on-device inference.
 Each is an executor/tool once Phase 1 lands. Rough order of frequency
 of use:
 
-- [ ] Dictation mode: "start dictation" → keystrokes until "stop", with
-      punctuation commands; spell/tone fix on selected text via Tier 2
+- [~] Dictation mode (v1 built 2026-07-17, executors/dictation_executor.py):
+      "start dictation" → continuous transcribe-and-type until "stop
+      dictation" (or the pause hotkey). Leans on Whisper's own
+      punctuation/capitalization rather than Dragon-style "say comma"
+      commands; adds only "new line"/"new paragraph"/"scratch that"/"undo"
+      and a smart space-join between chunks. Runs a sustained loop inside
+      the command cycle (the lock isolates it from the wake word), new
+      "dictating" AppState mode surfaced in the tray + transcript bar,
+      records with the speaker filter off (it's definitely you), pure text
+      logic unit-tested + loop mock-tested. v2 TODO (deferred): explicit
+      punctuation overrides / literal mode, LLM spell/tone/grammar fix via
+      Tier 2 (the "selected text" cleanup), number/date formatting, and a
+      smarter chunk-boundary join (feed prior chunk to Whisper as context).
 - [ ] Email (Outlook COM): read inbox aloud, draft/reply by voice
 - [ ] Reminders + calendar: local store + toasts; Outlook calendar COM
 - [ ] Word COM: draft documents, formatting operations (the resume case)
@@ -112,9 +141,16 @@ media control happen by voice.
       tier + STT model size, both apply immediately) (2026-07-16).
       Non-config-editor rows (hotkeys, TTS speed, etc.) still exist -
       "100% of config, YAML never required" isn't fully closed yet.
-- [x] Live transcript bar (2026-07-16, ui/transcript_bar.py): small
-      always-on-top HUD showing the current mode and latest exchange,
-      toggled from the tray or Settings, off by default, choice persists.
+- [x] Live transcript bar (2026-07-16, ui/transcript_bar.py): docked HUD
+      (real Windows app-bar via SHAppBarMessage, ~half taskbar height)
+      showing every spoken/heard line live via state.add_caption() -
+      not just one entry per finished command - plus quick controls
+      (Settings, Listen Now, mic pause, input level, input device).
+      Toggled from the tray or Settings, off by default, choice
+      persists. Rebuilt 2026-07-17 after live reports that it lost
+      always-on-top after 200ms, didn't reserve real screen space, and
+      missed everything except finished commands (no "Yes?" cue,
+      confirmation questions, or replies).
 - [ ] Start on login, crash watchdog, update checker
 - [ ] Privacy proof: tray network indicator showing zero outbound
       traffic during normal use (searches visibly excepted)

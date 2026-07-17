@@ -17,6 +17,7 @@ import logging
 import re
 
 from core.text_utils import normalize_command, strip_filler_prefixes
+from executors import dictation_executor as _dictation_executor
 from executors import system_executor as _system_executor
 from executors import ui_executor as _ui_executor
 
@@ -161,6 +162,16 @@ _PATTERNS: list[tuple[str, list[str]]] = [
             r"^(number\s+)?(zero|one|two|three|four|five|six|seven|eight|nine|ten|"
             r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
             r"nineteen|twenty|thirty|forty|fifty)(\s+(one|two|three|four|five|six|seven|eight|nine))?$",
+        ],
+    ),
+    (
+        "dictation_executor",
+        [
+            # Continuous dictation MODE ("start dictation" -> type until
+            # stopped), distinct from typing_executor's one-shot "type X" /
+            # "dictate X". Referenced from the executor's own _START_RE so
+            # the two can't drift (same convention as _system/_ui below).
+            _dictation_executor._START_RE.pattern,
         ],
     ),
     (
@@ -493,6 +504,12 @@ if __name__ == "__main__":
         ("put labels on the screen", "ui_executor"),
         ("height numbers", "ui_executor"),  # STT mishearing of "hide numbers"
         ("what on-screen commands can you perform", "ui_executor"),
+        # 2026-07-17 dictation mode - must not collide with typing_executor's
+        # one-shot "dictate X" / "type X".
+        ("start dictation", "dictation_executor"),
+        ("take dictation", "dictation_executor"),
+        ("dictate hello world", "typing_executor"),
+        ("type hello world", "typing_executor"),
     ]
 
     mismatches = 0

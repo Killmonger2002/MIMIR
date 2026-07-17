@@ -40,7 +40,7 @@ def apply_window_theme(window: tk.Misc) -> None:
     window.configure(bg=BG_WINDOW)
 
 
-def _ensure_progressbar_style() -> None:
+def ensure_progressbar_style() -> None:
     """Register the dark/green ttk progress bar style once per process."""
     global _PROGRESSBAR_STYLE_READY
     if _PROGRESSBAR_STYLE_READY:
@@ -59,6 +59,25 @@ def _ensure_progressbar_style() -> None:
         thickness=10,
     )
     _PROGRESSBAR_STYLE_READY = True
+
+
+def ensure_thin_progressbar_style() -> None:
+    """A slimmer variant of the dark/green progress bar (thickness 6 vs
+    10) for space-constrained widgets like the transcript bar - a
+    separate style name from Mimir.Horizontal.TProgressbar since ttk
+    styles are process-global and other windows still want the taller
+    bar."""
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure(
+        "MimirThin.Horizontal.TProgressbar",
+        troughcolor=BG_INSET,
+        bordercolor=BG_INSET,
+        background=ACCENT_GREEN,
+        lightcolor=ACCENT_GREEN,
+        darkcolor=ACCENT_GREEN,
+        thickness=6,
+    )
 
 
 def card(parent: tk.Misc, **kwargs) -> tk.Frame:
@@ -102,7 +121,7 @@ def labeled_progress(parent: tk.Misc, label: str) -> tuple[tk.Frame, ttk.Progres
     """A titled progress bar row: label + percentage on one line, bar below.
     Returns (container, progressbar, value_label) - call value_label.configure
     and progressbar['value'] = ... to update."""
-    _ensure_progressbar_style()
+    ensure_progressbar_style()
     frame = tk.Frame(parent, bg=BG_CARD)
     header = tk.Frame(frame, bg=BG_CARD)
     header.pack(fill=tk.X)

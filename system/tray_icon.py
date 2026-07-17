@@ -25,6 +25,7 @@ _COLORS = {
     "speaking": (156, 39, 176),   # purple
     "paused": (128, 128, 128),    # gray
     "shutting_down": (128, 128, 128),
+    "dictating": (217, 154, 63),  # orange
 }
 
 _POLL_INTERVAL_SEC = 0.3
@@ -94,9 +95,17 @@ class TrayIcon:
         return "Hide Live Transcript" if is_showing() else "Show Live Transcript"
 
     def _pause_label(self, _item: pystray.MenuItem) -> str:
+        if self._state.is_dictating():
+            return "Stop Dictation"
         return "Resume" if self._state.is_paused() else "Pause"
 
     def _toggle_pause(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
+        # While dictating, this item is the hard-stop for the dictation
+        # loop (matching the pause hotkey's behavior), not a pause toggle.
+        if self._state.is_dictating():
+            self._state.request_stop_dictation()
+            logger.info("Dictation stop requested via tray menu")
+            return
         paused = self._state.toggle_pause()
         self._state.set_mode("paused" if paused else "idle")
         logger.info("MIMIR %s via tray menu", "paused" if paused else "resumed")

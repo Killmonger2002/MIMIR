@@ -13,8 +13,11 @@ use the system default microphone).
 ## 1. Whisper (speech-to-text)
 
 No action needed. `faster-whisper` automatically downloads and caches the
-model specified by `stt.model_size` in `config.yaml` (default `tiny.en`)
+model specified by `stt.model_size` in `config.yaml` (default `base.en`)
 on first run. The cache lives under `%USERPROFILE%\.cache\huggingface`.
+`base.en` is the recommended default (best accuracy-per-latency on CPU);
+`tiny.en` is faster but noticeably less accurate, `small.en` is more
+accurate but ~3x slower on CPU. Switchable live from Settings.
 
 ## 2. Piper (text-to-speech)
 

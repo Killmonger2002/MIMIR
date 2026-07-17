@@ -76,7 +76,7 @@ def unload() -> None:
         gc.collect()
 
 
-def record_until_silence(max_wait_sec: float | None = None) -> np.ndarray:
+def record_until_silence(max_wait_sec: float | None = None, apply_speaker_filter: bool = True) -> np.ndarray:
     """Record audio from the default input device until ~1s of silence.
 
     Uses Silero VAD (via openwakeword's bundled onnxruntime wrapper, no
@@ -90,6 +90,15 @@ def record_until_silence(max_wait_sec: float | None = None) -> np.ndarray:
     that window, give up and return what was recorded (used for yes/no
     confirmation replies, where waiting forever would hang the command
     loop if the user walks away).
+
+    apply_speaker_filter=False skips the enrolled-speaker filter entirely.
+    Confirmation replies pass this: MIMIR has just asked a direct yes/no
+    question and is waiting a few seconds for a short answer, so there's
+    no "crowded room" ambiguity to resolve - and a short "yes" is exactly
+    the kind of clip speaker verification handles worst (too brief for a
+    reliable embedding). Silently dropping a "yes" here turned shutdown/
+    confirmation prompts into "no, cancelled" no matter what the user
+    said - observed live, 2026-07-17.
     """
     sample_rate = config.stt.sample_rate
     block_duration = 0.1  # seconds per chunk
@@ -137,7 +146,7 @@ def record_until_silence(max_wait_sec: float | None = None) -> np.ndarray:
         except Exception:
             logger.exception("Noise reduction failed; using raw audio")
 
-    if config.speaker_verification.enabled:
+    if apply_speaker_filter and config.speaker_verification.enabled:
         from core.speaker_verify import filter_by_speaker
 
         audio = filter_by_speaker(audio, sample_rate)
